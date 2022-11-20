@@ -13,9 +13,8 @@ A local absorbed dose deposition is assumed.
 The script works as a command line tool with this example usage:
 
 ``
-python create_dose_map.py
+python create_dose_map --input_path input_path --output_path output_path shunt_factor shunt
 ``
-
 ## List of dependencies
 
 The scripts should use fairly standardized python libraries to improve usability. 
@@ -24,3 +23,8 @@ As of now the following libraries are required:
 - argparse
 - numpy 
 - nrrd [Get it here](https://pynrrd.readthedocs.io/en/stable/)
+
+## TODOs
+
+See the issues-page for an updated list.
+
