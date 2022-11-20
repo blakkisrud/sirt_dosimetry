@@ -12,7 +12,9 @@ The calculation is based on having the total counts in the image (with or withou
 A local absorbed dose deposition is assumed.
 The script works as a command line tool with this example usage:
 
-python 
+``
+python create_dose_map.py
+``
 
 ## List of dependencies
 
@@ -21,4 +23,4 @@ As of now the following libraries are required:
 
 - argparse
 - numpy 
-- nrrd [Link text Here](https://pynrrd.readthedocs.io/en/stable/)
+- nrrd [Get it here](https://pynrrd.readthedocs.io/en/stable/)
