@@ -21,10 +21,6 @@ import nrrd
 import numpy as np
 import sirt_functions as sf
 
-# Constants
-TISSUE_DENSITY = 1.05  # grams per cubic cm
-DOSE_CONSTANT = 50  # Given admin activity in GBq and mass in Kg
-
 if __name__ == "__main__":
     # =============================================================================
     # Argument parsing
