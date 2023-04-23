@@ -28,3 +28,12 @@ As of now the following libraries are required:
 
 See the issues-page for an updated list.
 
+### Short term
+
+- Script to perform dosimetry on pre-segmented regions
+
+### Longer term
+
+- Decide on graphic user interface
+- Embedded segmentation or SLICER-bridging
+
