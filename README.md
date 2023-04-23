@@ -23,6 +23,7 @@ As of now the following libraries are required:
 - argparse
 - numpy 
 - nrrd [Get it here](https://pynrrd.readthedocs.io/en/stable/)
+- yaml
 
 ## TODOs
 
