@@ -1,2 +1,4 @@
 *.nrrd
 *.png
+data/*
+misc/*
