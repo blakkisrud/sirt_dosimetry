@@ -1,0 +1,2 @@
+TISSUE_DENSITY: 1.05  # g/cm^3
+DOSE_CONSTANTS: 50 # Gy, given admin act in GBq and mass in kg

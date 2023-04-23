@@ -14,10 +14,22 @@ Author: johbla@ous-hf.no
 import argparse
 import nrrd
 import numpy as np
+import yaml
 
-# Constants
-TISSUE_DENSITY = 1.05  # grams per cubic cm
-DOSE_CONSTANT = 50  # Given admin activity in GBq and mass in Kg
+
+# =============================================================================
+# Functions
+# =============================================================================
+
+def read_constants(path_to_constants = "constants.yaml"):
+    with open("constants.yaml", 'r') as stream:
+        try:
+            constants = yaml.safe_load(stream)
+        except yaml.YAMLError as exc:
+            print(exc)
+            return None
+
+    return constants
 
 def dose_map_func(input_path, output_path="", shunt_factor=0.0):
 
@@ -49,3 +61,13 @@ def dose_map_func(input_path, output_path="", shunt_factor=0.0):
         nrrd.write(output_path, dose_map, header=image_header, index_order='C')
         print("Dose map saved as nrrd at", output_path)
     return dose_map
+
+# =============================================================================
+# Constants from constants.yaml
+# =============================================================================
+
+constants = read_constants()
+TISSUE_DENSITY = constants["TISSUE_DENSITY"]
+DOSE_CONSTANT = constants["DOSE_CONSTANT"]
+
+
