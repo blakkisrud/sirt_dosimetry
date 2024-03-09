@@ -2,3 +2,4 @@
 *.png
 data/*
 misc/*
+.spyproject/*
