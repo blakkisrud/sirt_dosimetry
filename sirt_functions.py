@@ -15,11 +15,62 @@ import argparse
 import nrrd
 import numpy as np
 import yaml
+import logging
+import os
 
+# =============================================================================
+# Run constants - could be read from the yaml-file
+# =============================================================================
+
+DO_DELETE_LOG_FILE = False
 
 # =============================================================================
 # Functions
 # =============================================================================
+
+def setup_logger(f_name = "program.log"):
+
+    """
+    Set up the logger
+
+    Returns
+    -------
+    logger : logging.Logger
+        The logger object
+    """
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # File handler for logger
+
+    fh = logging.FileHandler(f_name)
+    fh.setLevel(logging.INFO)
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+
+    logger.info("Logger set up")
+
+    return logger
+
+def delete_log_file(f_name = "program.log"):
+    """
+    Delete the log file
+    """
+
+    if os.path.exists(f_name):
+        os.remove(f_name)
+        print("File deleted: ", f_name)
+    else:
+        print("The file does not exist")
 
 def read_constants(path_to_constants = "constants.yaml"):
     with open("constants.yaml", 'r') as stream:
@@ -68,6 +119,19 @@ def dose_map_func(input_path, output_path="", shunt_factor=0.0):
 
 constants = read_constants()
 TISSUE_DENSITY = constants["TISSUE_DENSITY"]
-DOSE_CONSTANT = constants["DOSE_CONSTANT"]
+DOSE_CONSTANT = constants["DOSE_CONSTANTS"]
+
+# =============================================================================
+# Logger
+# =============================================================================
+
+if DO_DELETE_LOG_FILE:
+    delete_log_file()
+    logger = setup_logger()
+
+else:
+
+    logger = setup_logger()
+
 
 
