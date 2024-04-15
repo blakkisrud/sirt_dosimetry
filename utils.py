@@ -52,7 +52,3 @@ def calculate_bq_for_segmentations_operations(dm, input):
 
     pass
 
-
-def create_100Gy_regions(dm, input=None):
-
-    pass

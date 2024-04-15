@@ -48,7 +48,7 @@ class InputDataSIRT:
 
         # For plotting 3x3 100Gy regions, given various administerred activities (GBq)
         self.ind_window = [int(x) for x in df.loc["IND_WINDOW"].dropna().values]
-        self.act_levels = [float(x) for x in df.loc["ACT_LEVELS"].dropna().values]
+        self.act_levels = np.array([float(x) for x in df.loc["ACT_LEVELS"].dropna().values])
 
         idx_segmentations = int(np.argwhere([ind[:3] == "***" for ind in df.index.values]))
         self.seg_operations = df.iloc[idx_segmentations + 1:, :]
@@ -73,6 +73,8 @@ class InputDataSIRT:
         self.segmentation_path = os.path.join(
             self.patient_top_dir, "Segmentation.seg.nrrd")
         self.segname_tot_counts = kwargs.get("segname_tot_counts", "counts_tot")
+
+        self.dosemap_path = os.path.join(self.patient_top_dir, "dose_map.nrrd")
 
         # self.segmentation_label_map = os.path.join(
         #     self.patient_top_dir, "SegmentationLabelMap.nrrd")
@@ -175,6 +177,68 @@ class InputDataSIRT:
 
         logger.info("All files exist")
 
+    def make_XGy_regions(self, X=100):
+        # Use meta_spect to interpolate dm to CT-shape?
+        import SimpleITK as sitk
+
+        ct = sitk.ReadImage(self.CT_path)
+        spect = sitk.ReadImage(self.SPECT_path)
+        dm = sitk.ReadImage(self.dosemap_path)
+
+        ct_size, ct_spacing = ct.GetSize(), ct.GetSpacing()
+        # print(ct_size, ct_spacing)
+        # print(dm.GetSize())
+
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetReferenceImage(ct)
+        resampler.SetInterpolator(sitk.sitkLinear)
+        resampler.SetSize(ct_size)
+        resampler.SetOutputSpacing(ct_spacing)
+        resampler.SetTransform(sitk.AffineTransform(3))
+
+        # spect_resamp = resampler.Execute(spect)
+        dm_resamp = resampler.Execute(dm)
+
+        CT = sitk.GetArrayFromImage(ct)
+        SPECT = sitk.GetArrayFromImage(spect)
+        DM_RESAMP = sitk.GetArrayFromImage(dm_resamp)
+        # print(CT.shape, DM_RESAMP.shape, np.mean(DM_RESAMP), np.mean(sitk.GetArrayFromImage(dm)))
+
+        # print(self.ind_window)  # on SPECT
+        ind_window_ct = np.array(self.ind_window) * CT.shape[0] / SPECT.shape[0]
+        ind_window_ct = ind_window_ct
+        indices = np.linspace(ind_window_ct[0], ind_window_ct[1], 9).astype(int)
+
+
+        print(self.act_levels)
+        # ind = 35
+        fig, ax = plt.subplots(nrows=3, ncols=3, figsize=(10, 10))
+        ax = ax.ravel()
+        for i, ind in enumerate(indices):
+            ax[i].imshow(CT[ind, :, :], alpha=1, vmin=-135, vmax=215, cmap="gray")
+            # plt.imshow(SPECT_RESAMP[ind, :, :], alpha=0.50, cmap="hot")
+            # dm_ma = np.ma.masked_where(np.logical_not(DM_RESAMP[ind, :, :]), DM_RESAMP[ind, :, :])
+
+            # plt.imshow(dm_ma, alpha=0.50, cmap="hot")
+            levels = np.array([X, X, X]) / self.act_levels
+            # levels = np.sort(levels)
+            colors = ["cyan", "yellow", "red"]
+            print(self.act_levels)
+            print(levels)
+
+            dm_slice = DM_RESAMP[ind, :, :]
+            # plt.imshow(dm_slice, alpha=0.50, cmap="hot")
+            ax[i].contour(dm_slice, levels=levels, colors=colors)
+            ax[i].axis("off")
+
+        # fig.tight_layout()
+        pad = -.1
+        fig.subplots_adjust(wspace=pad, hspace=pad)
+        fig.suptitle(f"{X}Gy regions for {''', '''.join(self.act_levels.astype(str))} GBq administerred 90Y")
+        plt.show()
+
+
+        pass
 
 
 def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference_geometry = "SPECT"):
@@ -279,10 +343,11 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
 
     # sys.exit()
     # nrrd.write("dose_map.nrrd", dose_map, header=input_header, index_order='C')
-    path_dosemap = os.path.join(input_data.patient_top_dir, "dose_map.nrrd")
-    nrrd.write(path_dosemap, dose_map, header=input_header, index_order='C')
+    # dosemap_path = os.path.join(input_data.patient_top_dir, "dose_map.nrrd")
+    nrrd.write(input_data.dosemap_path, dose_map, header=input_header, index_order='C')
 
     return dose_map
+
 
 def make_cDVH(list_of_voxels, units = "Gy", dosage_levels = [1.0, 1.5, 2.0], tum_name = None):
 
@@ -338,7 +403,9 @@ input_data = InputDataSIRT(patient_top_dir=patient_top_dir)
 # dose_map = make_dosemap(input_data, shunt_factor=0.0, reference_geometry="SPECT")
 dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
 
-calculate_bq_for_segmentations_operations(dose_map, input_data)
+input_data.make_XGy_regions()
+
+# calculate_bq_for_segmentations_operations(dose_map, input_data)
 # input_data.seg_operations
 
 sys.exit()
