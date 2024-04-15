@@ -5,7 +5,7 @@ When tests are done and satisfactory, the functions can be used in the main
 file source code.
 
 """
-
+from utils import *
 import sirt_functions as sirt
 import os
 import pandas as pd
@@ -25,60 +25,28 @@ import yaml
 class Segmentations:
 
     patient_top_dir: str
-    total_count_index: int  # This is exluding tumors
-    lung_index: int
-    num_of_tumors: int  # Might be superfluous
-    tumor_index_dict: dict
 
-    tumor_alias_dict: dict
 
-    def load_loopup_table(self, lookup_table):
-        """
-        Load the lookup table for the segmentation
+    # total_count_index: int  # This is exluding tumors
+    # lung_index: int
+    # num_of_tumors: int  # Might be superfluous
+    # tumor_index_dict: dict
+    # tumor_alias_dict: dict
 
-        Parameters
-        ----------
-        lookup_table : str
-            The lookup table file
-
-        Returns
-        -------
-        lookup_dict : dict
-            A dictionary with the segment names as keys and the segment index as
-            values
-        """
-
-        with open(lookup_table, 'r') as f:
-
-            lookup_dict = {}
-
-            for line in f:
-                if line.startswith("#"):
-                    continue
-
-                parts = line.split()
-
-                if len(parts) != 6:
-                    logger.error("Ignoring line: ", line)
-                    continue
-
-                seg_name = parts[1]
-                seg_index = int(parts[0])
-
-                lookup_dict[seg_name] = seg_index
-
-        return lookup_dict
 
     def __init__(self, patient_top_dir: str):
 
         self.patient_top_dir = patient_top_dir
 
-        lookup_table_path = os.path.join(
-            self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
-        
-        self.lookup_table = self.load_loopup_table(lookup_table_path)
+        # self.load_segmentations()
 
-        print("Lookup table: ", self.lookup_table)
+
+        # lookup_table_path = os.path.join(
+        #     self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
+        
+        # self.lookup_table = self.load_loopup_table(lookup_table_path)
+
+        # print("Lookup table: ", self.lookup_table)
 
         # Check if "LiverTotal" is in index of dict
 
@@ -134,66 +102,98 @@ class InputDataSIRT:
     CT_path: str
     SPECT_path: str
     segmentation_path: str
-    segmentation_label_map: str
-    lookup_table_path: str
+    # segmentation_label_map: str
+    # lookup_table_path: str
 
-    input_data_yaml: str
+    # input_data_yaml: str
+
+    time_to_img: float
     shunt_factor: float
+    seg_table: pd.DataFrame
 
-    segmentation: Segmentations
+    seg: np.array
 
     def load_settings(self, path_settings):
         df = pd.read_csv(path_settings, sep=";", index_col=0)
         self.time_to_img = float(df.loc["TIME TO IMG"].dropna().values)
-        self.lsf = float(df.loc["LSF"].dropna().values)
+        self.shunt_factor = float(df.loc["LSF"].dropna().values)
 
 
         idx_segmentations = int(np.argwhere([ind[:3] == "***" for ind in df.index.values]))
         self.seg_table = df.iloc[idx_segmentations+1:, :]
         del df
 
-        print(f"LOADED FROM settings.csv: time_to_img={self.time_to_img}, LSF={self.lsf}, "
-              f"table for {len(self.seg_table)} segmentations.")
+        print(f"LOADED FROM settings.csv: time_to_img={self.time_to_img}, shunt_factor={self.shunt_factor}, "
+              f"seg_table with {len(self.seg_table)} segmentations:")
         print(self.seg_table)
         return 1
 
 
-    def __init__(self, patient_top_dir: str):
+    def __init__(self, patient_top_dir: str, **kwargs):
 
         self.patient_top_dir = patient_top_dir
 
         self.CT_path = os.path.join(self.patient_top_dir, "CT.nrrd")
         self.SPECT_path = os.path.join(self.patient_top_dir, "SPECT.nrrd")
         self.segmentation_path = os.path.join(
-            self.patient_top_dir, "SegmentationNamed.seg.nrrd")
-        self.segmentation_label_map = os.path.join(
-            self.patient_top_dir, "SegmentationLabelMap.nrrd")
+            self.patient_top_dir, "Segmentation.seg.nrrd")
+        self.segname_tot_counts = kwargs.get("segname_tot_counts", "counts_tot")
 
-        # LOAD self.time_to_img, self.lsf, self.seg_table
+        # self.segmentation_label_map = os.path.join(
+        #     self.patient_top_dir, "SegmentationLabelMap.nrrd")
+
+        # LOAD self.time_to_img, self.shunt_factor, self.seg_table
         self.load_settings(os.path.join(self.patient_top_dir, "settings.csv"))    # LFS, time-points, and segmentation_table
 
         # self.lookup_table_path = os.path.join(
         #     self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
 
-        self.segmentation = Segmentations(patient_top_dir=self.patient_top_dir)
-        sys.exit()
+        self.load_segmentations(path=self.segmentation_path)
 
-        self.input_data_yaml = os.path.join(self.patient_top_dir, "input.yaml")
 
-        with open(self.input_data_yaml, 'r') as f:
 
-            try:
+    def load_segmentations(self, path):
+        print("LOADING SEGMENTATIONS:", end="\t")
+        self.seg, meta = nrrd.read(path, index_order="C")
+        print(self.seg.shape)
+        # print(meta)
 
-                input_data_dict = yaml.safe_load(f)
+        if meta["dimension"] != 4:
+            print("NOT IMPLEMENTED 3-DIM SEGMENTATION INPUT")
+            sys.exit()
 
-                print("DEBUG", input_data_dict)
+        seg_names_meta = list(filter(lambda k: "_Name" in k and "Auto" not in k, meta))
+        seg_names_meta = {meta[nm]:nm.split("_")[0] for nm in seg_names_meta}
+        # print(seg_names_meta)
 
-            except yaml.YAMLError as exc:
+        if not self.segname_tot_counts in seg_names_meta.keys():
+            print("DID NOT FIND", self.segname_tot_counts, "IN SEGMENTATION...")
+            sys.exit()
+        else:
+            # add counts_tot layer + label values to seg_table
+            self.seg_table.loc[self.segname_tot_counts, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[self.segname_tot_counts])
 
-                logger.error(exc)
-                raise exc
 
-            self.shunt_factor = input_data_dict["shunt_factor"]
+        seg_overlap = set(seg_names_meta.keys()).intersection(self.seg_table.index.values)
+        # print(seg_overlap)
+        # print(self.seg_table.index.values)
+
+        print(f"\tFOUND {len(seg_overlap)} of {len(set(self.seg_table.index))} segmentations from settings.csv", end="\t")
+
+        seg_extras = set(seg_names_meta.keys()).difference(set(self.seg_table.index.values))
+        # print(seg_extras)
+
+        if seg_extras:
+            print(f"BUT found {len(seg_extras)} not in settings.csv:", seg_extras)
+        else:
+            print()
+
+        for seg_nm in seg_overlap:
+            self.seg_table.loc[seg_nm, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[seg_nm])
+        print("\tADDED LAYER / LABEL TO seg_table")
+        # print(self.seg_table)
+
+        pass
 
     def check_files(self):
 
@@ -347,14 +347,17 @@ logger.info("Testing functions")
 patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
 
 input_data = InputDataSIRT(patient_top_dir=patient_top_dir)
+# input_data.check_files()  # TODO: do this somewhere
 
-alias_dict = input_data.segmentation.tumor_alias_dict
+# alias_dict = input_data.segmentation.tumor_alias_dict
 
 dose_map = make_dosemap(input_data, shunt_factor=0.0, reference_geometry="SPECT")
+sys.exit()
+
 segment_voxels = voxel_values_by_segment_name(input_data, dose_map, "Tum1")
 make_cDVH(segment_voxels, )
 
-print(alias_dict)
+# print(alias_dict)
 
 sys.exit()
 
