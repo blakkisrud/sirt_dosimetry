@@ -113,6 +113,8 @@ def dose_map_func(input_path, output_path="", shunt_factor=0.0):
         print("Dose map saved as nrrd at", output_path)
     return dose_map
 
+
+
 # =============================================================================
 # Constants from constants.yaml
 # =============================================================================
@@ -120,6 +122,9 @@ def dose_map_func(input_path, output_path="", shunt_factor=0.0):
 constants = read_constants()
 TISSUE_DENSITY = constants["TISSUE_DENSITY"]
 DOSE_CONSTANT = constants["DOSE_CONSTANTS"]
+S_FACTOR = constants["S_FACTOR"]
+VOX_DIMS_ORIG = constants["VOX_DIMS_ORIG"]
+HALF_LIFE_SEC = constants["HALF_LIFE_HRS"] * 3600
 
 # =============================================================================
 # Logger

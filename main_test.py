@@ -22,79 +22,6 @@ import yaml
 
 
 @dataclass
-class Segmentations:
-
-    patient_top_dir: str
-
-
-    # total_count_index: int  # This is exluding tumors
-    # lung_index: int
-    # num_of_tumors: int  # Might be superfluous
-    # tumor_index_dict: dict
-    # tumor_alias_dict: dict
-
-
-    def __init__(self, patient_top_dir: str):
-
-        self.patient_top_dir = patient_top_dir
-
-        # self.load_segmentations()
-
-
-        # lookup_table_path = os.path.join(
-        #     self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
-        
-        # self.lookup_table = self.load_loopup_table(lookup_table_path)
-
-        # print("Lookup table: ", self.lookup_table)
-
-        # Check if "LiverTotal" is in index of dict
-
-        if "LiverTotal" in self.lookup_table:
-            self.total_count_index = self.lookup_table["LiverTotal"]
-
-        if "Lung" in self.lookup_table:
-            self.lung_index = self.lookup_table["Lung"]
-
-        else:
-            logger.warning("Lung not in lookup table - is this correct?")
-
-        tumor_list = [key for key in self.lookup_table.keys() if "Tum" in key]
-
-        self.num_of_tumors = len(tumor_list)
-
-        self.tumor_index_dict = {}
-
-        for tum in tumor_list:
-
-            self.tumor_index_dict[tum] = self.lookup_table[tum]
-
-        input_data_yaml = os.path.join(self.patient_top_dir, "input.yaml")
-
-        with open(input_data_yaml, 'r') as f:
-                
-            try:
-    
-                input_data_dict = yaml.safe_load(f)
-    
-            except yaml.YAMLError as exc:
-    
-                logger.error(exc)
-                raise exc
-
-        self.tumor_alias_dict = {} 
-
-        for key in input_data_dict.keys():
-
-            if "Tum" in key:
-
-                self.tumor_alias_dict[key.replace("_alias", "")] = input_data_dict[key]
-                print(key)
-    
-
-
-
-@dataclass
 class InputDataSIRT:
 
     patient_top_dir: str
@@ -109,7 +36,8 @@ class InputDataSIRT:
 
     time_to_img: float
     shunt_factor: float
-    seg_table: pd.DataFrame
+    seg_operations: pd.DataFrame    # operations to perform on segmentations (multiple OK)
+    seg_lookup: pd.DataFrame        # lookup-table for layer, value for segmentation names (one entry per segment name)
 
     seg: np.array
 
@@ -118,14 +46,21 @@ class InputDataSIRT:
         self.time_to_img = float(df.loc["TIME TO IMG"].dropna().values)
         self.shunt_factor = float(df.loc["LSF"].dropna().values)
 
+        # For plotting 3x3 100Gy regions, given various administerred activities (GBq)
+        self.ind_window = [int(x) for x in df.loc["IND_WINDOW"].dropna().values]
+        self.act_levels = [float(x) for x in df.loc["ACT_LEVELS"].dropna().values]
 
         idx_segmentations = int(np.argwhere([ind[:3] == "***" for ind in df.index.values]))
-        self.seg_table = df.iloc[idx_segmentations+1:, :]
+        self.seg_operations = df.iloc[idx_segmentations + 1:, :]
         del df
+        seg_names = set(self.seg_operations.index)
+        self.seg_lookup = pd.DataFrame(index=[*list(seg_names), self.segname_tot_counts],
+                                       columns=["Layer", "Label"], dtype=int)
 
         print(f"LOADED FROM settings.csv: time_to_img={self.time_to_img}, shunt_factor={self.shunt_factor}, "
-              f"seg_table with {len(self.seg_table)} segmentations:")
-        print(self.seg_table)
+              f"seg_operations with {len(self.seg_operations)} operations for {len(seg_names)} segmentations.")
+        print(self.seg_operations)
+
         return 1
 
 
@@ -151,7 +86,6 @@ class InputDataSIRT:
         self.load_segmentations(path=self.segmentation_path)
 
 
-
     def load_segmentations(self, path):
         print("LOADING SEGMENTATIONS:", end="\t")
         self.seg, meta = nrrd.read(path, index_order="C")
@@ -167,20 +101,19 @@ class InputDataSIRT:
         # print(seg_names_meta)
 
         if not self.segname_tot_counts in seg_names_meta.keys():
-            print("DID NOT FIND", self.segname_tot_counts, "IN SEGMENTATION...")
+            print("*** DID NOT FIND", self.segname_tot_counts, "IN SEGMENTATION...")
             sys.exit()
         else:
             # add counts_tot layer + label values to seg_table
-            self.seg_table.loc[self.segname_tot_counts, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[self.segname_tot_counts])
+            self.seg_lookup.loc[self.segname_tot_counts, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[self.segname_tot_counts])
 
-
-        seg_overlap = set(seg_names_meta.keys()).intersection(self.seg_table.index.values)
+        seg_overlap = set(seg_names_meta.keys()).intersection(self.seg_operations.index.values)
         # print(seg_overlap)
         # print(self.seg_table.index.values)
 
-        print(f"\tFOUND {len(seg_overlap)} of {len(set(self.seg_table.index))} segmentations from settings.csv", end="\t")
+        print(f"\tFOUND {len(seg_overlap)} of {len(set(self.seg_operations.index))} segmentations from settings.csv", end="\t")
 
-        seg_extras = set(seg_names_meta.keys()).difference(set(self.seg_table.index.values))
+        seg_extras = set(seg_names_meta.keys()).difference(set(self.seg_operations.index.values))
         # print(seg_extras)
 
         if seg_extras:
@@ -189,9 +122,20 @@ class InputDataSIRT:
             print()
 
         for seg_nm in seg_overlap:
-            self.seg_table.loc[seg_nm, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[seg_nm])
-        print("\tADDED LAYER / LABEL TO seg_table")
-        # print(self.seg_table)
+            self.seg_lookup.loc[seg_nm, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[seg_nm])
+        self.seg_lookup = self.seg_lookup.astype(int)
+
+        if not check_segments_overlaps(self.seg, seg_tot_name=self.segname_tot_counts,
+                                       df_lookup=self.seg_lookup.drop("Lungs")):
+            print(f"*** NON-OVERLAPPING VOXELS BETWEEN TOTAL COUNTS ({self.segname_tot_counts}) AND SEGMENTATIONS...")
+        else:
+            print("\tAll segments located in", self.segname_tot_counts, "-> ok (Lungs excluded)")
+
+        # sys.exit()
+        print("\tADDED LAYER / LABEL TO seg_lookup")
+
+        # print(self.seg_operations)
+        # print(self.seg_lookup)
 
         pass
 
@@ -235,6 +179,8 @@ class InputDataSIRT:
 
 def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference_geometry = "SPECT"):
 
+    print("CREATING dosemap using", reference_geometry, end="\t")
+
     if reference_geometry == "SPECT":
         input_path = input_data.SPECT_path
     
@@ -247,14 +193,16 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
         logger.warning("Shunt factor is 0.0 - is this correct?")
 
     # Use the total and the tumor to calculate the total
-        
+
     input_array, input_header = nrrd.read(input_path, index_order='C')  # SPECT
-    label_array, label_header = nrrd.read(input_data.segmentation_label_map, index_order='C')
+    # label_array, label_header = nrrd.read(input_data.segmentation_label_map, index_order='C')
+    print(input_array.shape)
+    label_array = input_data.seg
 
     total_mask = np.zeros(input_array.shape)
 
-    assert input_array.shape == label_array.shape == total_mask.shape
-
+    # assert input_array.shape == label_array.shape == total_mask.shape
+    assert input_array.shape == label_array.shape[:-1] == total_mask.shape
     # Check the spacing
 
     space_dirs = (input_header["space directions"])
@@ -263,24 +211,50 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     y_dim = np.abs((space_dirs[1, 1])) / 10
     z_dim = np.abs((space_dirs[2, 2])) / 10
 
+    if not (round(x_dim, 2) == round(y_dim, 2) and round(y_dim, 2) == round(z_dim, 2)):
+        print("*** ANISOTROPE VOXELS...")
+        sys.exit()
+    else:
+        d = x_dim * 10  # cm -> mm
+        s_scaling_factor = sirt.VOX_DIMS_ORIG**3 / d**3
+        # print(d, s_scaling_factor)
+        print(f"\tS-FACTOR SCALING d^3 / 4.42^3 = {s_scaling_factor:.3f}, using d={d:.2f} mm voxel sizes")
+
+
     voxel_mass = (x_dim * y_dim * z_dim * sirt.TISSUE_DENSITY) / 1e3  # Voxel mass in kg
 
-    liver_total_index = input_data.segmentation.total_count_index
+    # liver_total_index = input_data.segmentation.total_count_index
+    # liver_total_index, liver_total_layer = input_data.seg_operations.loc[input_data.segname_tot_counts, ["Label", "Layer"]]
 
-    tumor_dict = input_data.segmentation.tumor_index_dict
+    counts_total_index, counts_total_layer = get_segment_label_and_layer_from_lookup(input_data.seg, input_data.segname_tot_counts, input_data.seg_lookup)
 
-    total_mask[label_array == liver_total_index] = 1
+    # print(input_data.seg_operations)
+    print(counts_total_layer.shape)
 
-    for tum in tumor_dict.keys():
-            
-        total_mask[label_array == tumor_dict[tum]] = 1
 
-    total = np.sum(input_array[total_mask == 1])
+    # tumor_dict = input_data.segmentation.tumor_index_dict
 
-    for tum in tumor_dict.keys():
+    # total_mask[label_array == counts_total_index] = 1
+    # total_mask[counts_total_layer == counts_total_index] = 1
+    # print(total_mask)
 
-        tum_total = np.sum(input_array[label_array == tumor_dict[tum]])
-        print(tum_total/total)
+    # sys.exit()
+
+    # for tum in tumor_dict.keys():
+
+        # total_mask[label_array == tumor_dict[tum]] = 1
+
+    # total = np.sum(input_array[total_mask == 1])
+    total = np.sum(input_array[counts_total_layer == counts_total_index])
+    print("\tTOTAL COUNTS:", total, f"({total / np.sum(input_array)*100:.1f}% of whole image)")
+
+    # for tum in tumor_dict.keys():
+    for seg_nm in input_data.seg_lookup.index.values:
+        counts_total_index, counts_total_layer = get_segment_label_and_layer_from_lookup(input_data.seg, seg_nm, input_data.seg_lookup)
+        seg_total = np.sum(input_array[counts_total_layer == counts_total_index])
+        # tum_total = np.sum(input_array[label_array == tumor_dict[tum]])
+        print("\t", seg_nm, round(seg_total/total, 3))
+
 
     total = total / (1 - shunt_factor)
 
@@ -292,11 +266,21 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     assert np.max(fraction_image) <= 1.0
     assert np.min(fraction_image) >= 0.0
 
-    print(np.sum(fraction_image))
+    print("\tSum fraction image:", np.sum(fraction_image))
+    print(f"\t\twithin {input_data.segname_tot_counts}:", np.sum(fraction_image[counts_total_layer == counts_total_index]))
 
-    dose_map = (fraction_image * sirt.DOSE_CONSTANT) / (voxel_mass)
+    # dose_map = (fraction_image * sirt.DOSE_CONSTANT) / (voxel_mass)
+    # print(np.mean(dose_map))
+    # mean_old = np.mean(dose_map)
 
-    nrrd.write("dose_map.nrrd", dose_map, header=input_header, index_order='C')
+    dose_factor = np.log(2)**-1 * sirt.HALF_LIFE_SEC * sirt.S_FACTOR * s_scaling_factor
+    dose_map = fraction_image * dose_factor
+    # print(np.mean(dose_map), np.mean(dose_map) / mean_old)
+
+    # sys.exit()
+    # nrrd.write("dose_map.nrrd", dose_map, header=input_header, index_order='C')
+    path_dosemap = os.path.join(input_data.patient_top_dir, "dose_map.nrrd")
+    nrrd.write(path_dosemap, dose_map, header=input_header, index_order='C')
 
     return dose_map
 
@@ -351,7 +335,12 @@ input_data = InputDataSIRT(patient_top_dir=patient_top_dir)
 
 # alias_dict = input_data.segmentation.tumor_alias_dict
 
-dose_map = make_dosemap(input_data, shunt_factor=0.0, reference_geometry="SPECT")
+# dose_map = make_dosemap(input_data, shunt_factor=0.0, reference_geometry="SPECT")
+dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
+
+calculate_bq_for_segmentations_operations(dose_map, input_data)
+# input_data.seg_operations
+
 sys.exit()
 
 segment_voxels = voxel_values_by_segment_name(input_data, dose_map, "Tum1")
@@ -359,10 +348,7 @@ make_cDVH(segment_voxels, )
 
 # print(alias_dict)
 
-sys.exit()
-
-
-
+# sys.exit()
 
 
 #input_data.check_files()
