@@ -8,12 +8,13 @@ file source code.
 
 import sirt_functions as sirt
 import os
-import vtk
+import pandas as pd
+# import vtk
 import xml.etree.ElementTree as ET
 import SimpleITK as sitk
 import numpy as np
 import nrrd
-import slicer
+# import slicer
 import sys
 from dataclasses import dataclass
 import matplotlib.pyplot as plt
@@ -141,6 +142,22 @@ class InputDataSIRT:
 
     segmentation: Segmentations
 
+    def load_settings(self, path_settings):
+        df = pd.read_csv(path_settings, sep=";", index_col=0)
+        self.time_to_img = float(df.loc["TIME TO IMG"].dropna().values)
+        self.lsf = float(df.loc["LSF"].dropna().values)
+
+
+        idx_segmentations = int(np.argwhere([ind[:3] == "***" for ind in df.index.values]))
+        self.seg_table = df.iloc[idx_segmentations+1:, :]
+        del df
+
+        print(f"LOADED FROM settings.csv: time_to_img={self.time_to_img}, LSF={self.lsf}, "
+              f"table for {len(self.seg_table)} segmentations.")
+        print(self.seg_table)
+        return 1
+
+
     def __init__(self, patient_top_dir: str):
 
         self.patient_top_dir = patient_top_dir
@@ -151,11 +168,15 @@ class InputDataSIRT:
             self.patient_top_dir, "SegmentationNamed.seg.nrrd")
         self.segmentation_label_map = os.path.join(
             self.patient_top_dir, "SegmentationLabelMap.nrrd")
-        
-        self.lookup_table_path = os.path.join(
-            self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
-        
+
+        # LOAD self.time_to_img, self.lsf, self.seg_table
+        self.load_settings(os.path.join(self.patient_top_dir, "settings.csv"))    # LFS, time-points, and segmentation_table
+
+        # self.lookup_table_path = os.path.join(
+        #     self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
+
         self.segmentation = Segmentations(patient_top_dir=self.patient_top_dir)
+        sys.exit()
 
         self.input_data_yaml = os.path.join(self.patient_top_dir, "input.yaml")
 
@@ -201,13 +222,13 @@ class InputDataSIRT:
                 f"Lookup table {self.lookup_table_path} does not exist")
             raise FileNotFoundError(
                 f"Lookup table {self.lookup_table_path} does not exist")
-        
+
         if not os.path.exists(self.input_data_yaml):
             logger.error(
                 f"Input data yaml file {self.input_data_yaml} does not exist")
             raise FileNotFoundError(
                 f"Input data yaml file {self.input_data_yaml} does not exist")
-        
+
         logger.info("All files exist")
 
 
@@ -323,7 +344,7 @@ logger = sirt.logger
 
 logger.info("Testing functions")
 
-patient_top_dir = "G:\SIRT_dummy\\2024_03_08_ÅMSW82\Segmentations"
+patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
 
 input_data = InputDataSIRT(patient_top_dir=patient_top_dir)
 
