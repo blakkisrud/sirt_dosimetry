@@ -1,6 +1,6 @@
 TISSUE_DENSITY: 1.05  # g/cm^3
 DOSE_CONSTANTS: 50 # Gy, given admin act in GBq and mass in kg
 
-S_FACTOR: 1.65
-VOX_DIMS_ORIG: 4.42
-HALF_LIFE_HRS: 64.053
+S_FACTOR: 1.65          # Intra-voxel self-absorbtion of 90Y. Assuming tissue density of 1.05 g / cm^3 (liver) and 4.42 mm wide isotropic voxels.
+VOX_DIMS_ORIG: 4.42     # See above
+HALF_LIFE_HRS: 64.053   # Physical half live of 90Y in hours.

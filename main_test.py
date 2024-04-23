@@ -41,6 +41,8 @@ class InputDataSIRT:
 
     seg: np.array
 
+    voxel_vol_ml: float
+
     def load_settings(self, path_settings):
         df = pd.read_csv(path_settings, sep=";", index_col=0)
         self.time_to_img = float(df.loc["TIME TO IMG"].dropna().values)
@@ -49,12 +51,14 @@ class InputDataSIRT:
         # For plotting 3x3 100Gy regions, given various administerred activities (GBq)
         self.ind_window = [int(x) for x in df.loc["IND_WINDOW"].dropna().values]
         self.act_levels = np.array([float(x) for x in df.loc["ACT_LEVELS"].dropna().values])
+        self.act_levels = np.sort(self.act_levels)[::-1]    # countours want increasing levels (Gy-threshold decrease with increased activity)
 
         idx_segmentations = int(np.argwhere([ind[:3] == "***" for ind in df.index.values]))
         self.seg_operations = df.iloc[idx_segmentations + 1:, :]
         del df
-        seg_names = set(self.seg_operations.index)
-        self.seg_lookup = pd.DataFrame(index=[*list(seg_names), self.segname_tot_counts],
+        seg_names = list(set([*self.seg_operations.index, self.segname_tot_counts]))
+
+        self.seg_lookup = pd.DataFrame(index=seg_names,
                                        columns=["Layer", "Label"], dtype=int)
 
         print(f"LOADED FROM settings.csv: time_to_img={self.time_to_img}, shunt_factor={self.shunt_factor}, "
@@ -67,11 +71,14 @@ class InputDataSIRT:
     def __init__(self, patient_top_dir: str, **kwargs):
 
         self.patient_top_dir = patient_top_dir
-
+        self.voxel_vol_ml = 0 # TO TEST if changed in make_dosemap function
         self.CT_path = os.path.join(self.patient_top_dir, "CT.nrrd")
         self.SPECT_path = os.path.join(self.patient_top_dir, "SPECT.nrrd")
+
+        segmentation_name = kwargs.get("segmentation_name", "Segmentation.seg.nrrd")
         self.segmentation_path = os.path.join(
-            self.patient_top_dir, "Segmentation.seg.nrrd")
+            self.patient_top_dir, segmentation_name)
+
         self.segname_tot_counts = kwargs.get("segname_tot_counts", "counts_tot")
 
         self.dosemap_path = os.path.join(self.patient_top_dir, "dose_map.nrrd")
@@ -80,7 +87,8 @@ class InputDataSIRT:
         #     self.patient_top_dir, "SegmentationLabelMap.nrrd")
 
         # LOAD self.time_to_img, self.shunt_factor, self.seg_table
-        self.load_settings(os.path.join(self.patient_top_dir, "settings.csv"))    # LFS, time-points, and segmentation_table
+        settings_name = kwargs.get("settings_name", "settings.csv")
+        self.load_settings(os.path.join(self.patient_top_dir, settings_name))    # LFS, time-points, and seg_operations, seg_lookup, ind_window (for plotting)
 
         # self.lookup_table_path = os.path.join(
         #     self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
@@ -89,14 +97,20 @@ class InputDataSIRT:
 
 
     def load_segmentations(self, path):
-        print("LOADING SEGMENTATIONS:", end="\t")
+        print("\nLOADING SEGMENTATIONS:", end="\t")
         self.seg, meta = nrrd.read(path, index_order="C")
         print(self.seg.shape)
         # print(meta)
 
-        if meta["dimension"] != 4:
-            print("NOT IMPLEMENTED 3-DIM SEGMENTATION INPUT")
+        self.ndims_seg = meta["dimension"]
+        if self.ndims_seg == 4:
+            pass
+        elif self.ndims_seg == 3:
+            pass
+        else:
+            print("*** ERR: FOUND", self.ndims_seg, "DIMENSIONS IN", self.segmentation_path)
             sys.exit()
+
 
         seg_names_meta = list(filter(lambda k: "_Name" in k and "Auto" not in k, meta))
         seg_names_meta = {meta[nm]:nm.split("_")[0] for nm in seg_names_meta}
@@ -110,8 +124,6 @@ class InputDataSIRT:
             self.seg_lookup.loc[self.segname_tot_counts, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[self.segname_tot_counts])
 
         seg_overlap = set(seg_names_meta.keys()).intersection(self.seg_operations.index.values)
-        # print(seg_overlap)
-        # print(self.seg_table.index.values)
 
         print(f"\tFOUND {len(seg_overlap)} of {len(set(self.seg_operations.index))} segmentations from settings.csv", end="\t")
 
@@ -125,16 +137,26 @@ class InputDataSIRT:
 
         for seg_nm in seg_overlap:
             self.seg_lookup.loc[seg_nm, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[seg_nm])
+        # print(self.seg_lookup)
         self.seg_lookup = self.seg_lookup.astype(int)
 
-        if not check_segments_overlaps(self.seg, seg_tot_name=self.segname_tot_counts,
-                                       df_lookup=self.seg_lookup.drop("Lungs")):
-            print(f"*** NON-OVERLAPPING VOXELS BETWEEN TOTAL COUNTS ({self.segname_tot_counts}) AND SEGMENTATIONS...")
-        else:
-            print("\tAll segments located in", self.segname_tot_counts, "-> ok (Lungs excluded)")
 
-        # sys.exit()
-        print("\tADDED LAYER / LABEL TO seg_lookup")
+        # Check if total counts segmentation contains all other segmentations as subsets, as is implied when using
+        # fraction-map for dosimetry, excluding lungs (as lung counts are assumed included in the LSF)
+        lungs_in_lookup = [idx for idx in self.seg_lookup.index if idx in ["Lungs", "LUNGS", "lungs"]]
+        any_to_check = any(self.seg_lookup.index.drop([*lungs_in_lookup, self.segname_tot_counts]))
+
+        if any_to_check:
+
+            if not check_segments_overlaps(self.seg, seg_tot_name=self.segname_tot_counts,
+                                           df_lookup=self.seg_lookup.drop(lungs_in_lookup)):
+                print(f"*** NON-OVERLAPPING VOXELS BETWEEN TOTAL COUNTS ({self.segname_tot_counts}) AND SEGMENTATIONS...")
+            else:
+                print("\tAll segments located in", self.segname_tot_counts, "-> ok (Lungs excluded)")
+        else:
+            print("\tNo segments contained in ", self.segname_tot_counts, " -> not necessary to check self-containment")
+
+        print("\tADDED LAYER / LABEL TO seg_lookup for", len(self.seg_lookup), f"segmentations, added {len(self.seg_operations)} operations.")
 
         # print(self.seg_operations)
         # print(self.seg_lookup)
@@ -177,10 +199,58 @@ class InputDataSIRT:
 
         logger.info("All files exist")
 
-    def make_XGy_regions(self, X=100):
-        # Use meta_spect to interpolate dm to CT-shape?
-        import SimpleITK as sitk
+    def get_segment_label_and_layer_from_lookup(self, seg_name):
+        layer = self.seg_lookup.loc[seg_name, "Layer"]
+        label = self.seg_lookup.loc[seg_name, "Label"]
+        seg_layer = self.seg[:, :, :, layer]
+        return label, seg_layer
 
+
+    def calculate_XGy_region_volumes(self, dm, X=100, inside_segment=None):
+        inside_segment = inside_segment if inside_segment else self.segname_tot_counts
+
+        print(f"\nCALCULATING volumes for {X} Gy regions, inside {inside_segment}, when administerring {self.act_levels} GBq 90Y")
+        gy_thresholds = np.array([X]*len(self.act_levels)) / self.act_levels
+        print(f"\tcorresponding to Gy-thresholds on Gy / GBq voxel-map as:", np.round(gy_thresholds, 2))
+
+
+        # Remove counts not in liver / segmentation used to calculate total counts
+        # TODO: move to centralized loading? During dose-map creation? What other features not using (other) segmentations?
+
+        # counts_total_label, seg_total = get_segment_label_and_layer_from_lookup(self.seg, inside_segment, self.seg_lookup)
+        counts_total_label, seg_total = self.get_segment_label_and_layer_from_lookup(seg_name=inside_segment)
+        # seg_total[seg_total == counts_total_label] = 1
+        # seg_total[seg_total != counts_total_label] = 0
+
+        dm_in_tot = dm[seg_total == counts_total_label]
+
+        print(f"\tDOSEMAP voxel volume (cm3) = {self.voxel_vol_ml:.3f}", dm.shape)
+        for act, gy in zip(self.act_levels, gy_thresholds):
+            # print(gy, len(dm[dm >= gy]))
+            # num_vx = len(dm[dm >= gy])
+            num_vx = len(dm_in_tot[dm_in_tot >= gy])
+            vol = self.voxel_vol_ml * num_vx
+            print(f"\t{act} GBq ({gy:.1f} Gy threshold @ Gy / GBq dosemap) -> {vol:.3f} cm3")
+
+            for seg_name in self.seg_operations.index:
+                # sg_label, seg_sg = get_segment_label_and_layer_from_lookup(self.seg, sg, self.seg_lookup)
+                seg_label, seg = self.get_segment_label_and_layer_from_lookup(seg_name)
+                dm_in_seg = dm[seg == seg_label]
+                num_vx_seg = len(dm_in_seg[dm_in_seg >= gy])
+                mean_in_seg = np.mean(dm_in_seg[dm_in_seg >= gy])
+                vol_seg = self.voxel_vol_ml * num_vx_seg
+                print(f"\t\tInside {seg_name}:\t\t{vol_seg:.2f} cm3 (mean = {mean_in_seg:.2f} Gy)")
+
+        pass
+
+
+    def plot_XGy_regions(self, X=100):
+
+        # Use meta_spect to interpolate dm to CT-shape?
+        # NOTE: sitk cannot handle reading norwegian letters in file-name (ÆØÅ)
+
+        import SimpleITK as sitk
+        print(self.CT_path)
         ct = sitk.ReadImage(self.CT_path)
         spect = sitk.ReadImage(self.SPECT_path)
         dm = sitk.ReadImage(self.dosemap_path)
@@ -220,15 +290,15 @@ class InputDataSIRT:
             # dm_ma = np.ma.masked_where(np.logical_not(DM_RESAMP[ind, :, :]), DM_RESAMP[ind, :, :])
 
             # plt.imshow(dm_ma, alpha=0.50, cmap="hot")
-            levels = np.array([X, X, X]) / self.act_levels
+            gy_thresholds = np.array([X, X, X]) / self.act_levels
             # levels = np.sort(levels)
             colors = ["cyan", "yellow", "red"]
             print(self.act_levels)
-            print(levels)
+            print(gy_thresholds)
 
             dm_slice = DM_RESAMP[ind, :, :]
             # plt.imshow(dm_slice, alpha=0.50, cmap="hot")
-            ax[i].contour(dm_slice, levels=levels, colors=colors)
+            ax[i].contour(dm_slice, levels=gy_thresholds, colors=colors)
             ax[i].axis("off")
 
         # fig.tight_layout()
@@ -243,7 +313,7 @@ class InputDataSIRT:
 
 def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference_geometry = "SPECT"):
 
-    print("CREATING dosemap using", reference_geometry, end="\t")
+    print("\nCREATING dosemap using", reference_geometry, end="\t")
 
     if reference_geometry == "SPECT":
         input_path = input_data.SPECT_path
@@ -275,6 +345,8 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     y_dim = np.abs((space_dirs[1, 1])) / 10
     z_dim = np.abs((space_dirs[2, 2])) / 10
 
+    input_data.voxel_vol_ml = x_dim * y_dim * z_dim
+
     if not (round(x_dim, 2) == round(y_dim, 2) and round(y_dim, 2) == round(z_dim, 2)):
         print("*** ANISOTROPE VOXELS...")
         sys.exit()
@@ -290,10 +362,11 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     # liver_total_index = input_data.segmentation.total_count_index
     # liver_total_index, liver_total_layer = input_data.seg_operations.loc[input_data.segname_tot_counts, ["Label", "Layer"]]
 
-    counts_total_index, counts_total_layer = get_segment_label_and_layer_from_lookup(input_data.seg, input_data.segname_tot_counts, input_data.seg_lookup)
+    counts_total_index, counts_total_layer = input_data.get_segment_label_and_layer_from_lookup(input_data.segname_tot_counts)
 
     # print(input_data.seg_operations)
-    print(counts_total_layer.shape)
+    print("\t", counts_total_layer.shape, input_data.seg.shape)
+    # sys.exit()
 
 
     # tumor_dict = input_data.segmentation.tumor_index_dict
@@ -314,7 +387,8 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
 
     # for tum in tumor_dict.keys():
     for seg_nm in input_data.seg_lookup.index.values:
-        counts_total_index, counts_total_layer = get_segment_label_and_layer_from_lookup(input_data.seg, seg_nm, input_data.seg_lookup)
+        # counts_total_index, counts_total_layer = get_segment_label_and_layer_from_lookup(input_data.seg, seg_nm, input_data.seg_lookup)
+        counts_total_index, counts_total_layer = input_data.get_segment_label_and_layer_from_lookup(seg_nm)
         seg_total = np.sum(input_array[counts_total_layer == counts_total_index])
         # tum_total = np.sum(input_array[label_array == tumor_dict[tum]])
         print("\t", seg_nm, round(seg_total/total, 3))
@@ -345,7 +419,7 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     # nrrd.write("dose_map.nrrd", dose_map, header=input_header, index_order='C')
     # dosemap_path = os.path.join(input_data.patient_top_dir, "dose_map.nrrd")
     nrrd.write(input_data.dosemap_path, dose_map, header=input_header, index_order='C')
-
+    print("\tDOSEMAP saved as:", input_data.dosemap_path)
     return dose_map
 
 
@@ -389,26 +463,35 @@ def voxel_values_by_segment_name(input_data: InputDataSIRT, dose_map, segment_na
 
     return segment_voxels
 
+
+
 logger = sirt.logger
 
 logger.info("Testing functions")
 
-patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
+# patient_top_dir = r"E:\SIRT\EKR52\Slicer"
+patient_top_dir = r"E:\SIRT\AAMSW82\Slicer"
 
-input_data = InputDataSIRT(patient_top_dir=patient_top_dir)
+
+input_data = InputDataSIRT(patient_top_dir=patient_top_dir, segname_tot_counts="TotalCounts", segmentation_name="dosemap_segmentation.seg.nrrd", settings_name="settings.csv")
 # input_data.check_files()  # TODO: do this somewhere
 
 # alias_dict = input_data.segmentation.tumor_alias_dict
 
 # dose_map = make_dosemap(input_data, shunt_factor=0.0, reference_geometry="SPECT")
 dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
+# input_data.act_levels = [100]
 
-input_data.make_XGy_regions()
+input_data.calculate_XGy_region_volumes(dose_map)
+sys.exit()
+
+input_data.plot_XGy_regions()
+
 
 # calculate_bq_for_segmentations_operations(dose_map, input_data)
 # input_data.seg_operations
 
-sys.exit()
 
 segment_voxels = voxel_values_by_segment_name(input_data, dose_map, "Tum1")
 make_cDVH(segment_voxels, )

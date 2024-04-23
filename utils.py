@@ -1,15 +1,16 @@
 import numpy as np
-
+import sys
 
 def get_layer_label_values_from_meta(meta, segment):
     layer = int(meta[segment + "_Layer"])
     label = int(meta[segment + "_LabelValue"])
     return layer, label
 
-def get_segment_label_and_layer_from_lookup(seg, name, lookup):
-    seg_layer = seg[:, :, :, lookup.loc[name, "Layer"]]
-    label = lookup.loc[name, "Label"]
-    return label, seg_layer
+# def get_segment_label_and_layer_from_lookup(seg, name, lookup):
+#     layer = lookup.loc[name, "Layer"]
+#     label = lookup.loc[name, "Label"]
+#     seg_layer = seg[:, :, :, layer]
+#     return label, seg_layer
 
 
 def check_segments_overlaps(seg, seg_tot_name, df_lookup):
