@@ -124,7 +124,8 @@ TISSUE_DENSITY = constants["TISSUE_DENSITY"]
 DOSE_CONSTANT = constants["DOSE_CONSTANTS"]
 S_FACTOR = constants["S_FACTOR"]
 VOX_DIMS_ORIG = constants["VOX_DIMS_ORIG"]
-HALF_LIFE_SEC = constants["HALF_LIFE_HRS"] * 3600
+HALF_LIFE_HRS = constants["HALF_LIFE_HRS"]
+HALF_LIFE_SEC = HALF_LIFE_HRS * 3600
 
 # =============================================================================
 # Logger
