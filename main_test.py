@@ -232,11 +232,14 @@ class InputDataSIRT:
 
         logger.info("All files exist")
 
-    def get_segment_label_and_layer_from_lookup(self, seg_name):
+    def get_segment_label_and_layer_from_lookup(self, seg_name, return_layer_as_int=False):
         layer = self.seg_lookup.loc[seg_name, "Layer"]
         label = self.seg_lookup.loc[seg_name, "Label"]
         seg_layer = self.seg[:, :, :, layer]
-        return label, seg_layer
+        if return_layer_as_int:
+            return label, layer
+        else:
+            return label, seg_layer
 
 
     def calculate_XGy_region_volumes(self, dm, X=100, inside_segment=None):
@@ -269,43 +272,114 @@ class InputDataSIRT:
                 # sg_label, seg_sg = get_segment_label_and_layer_from_lookup(self.seg, sg, self.seg_lookup)
                 seg_label, seg = self.get_segment_label_and_layer_from_lookup(seg_name)
                 dm_in_seg = dm[seg == seg_label]
-                num_vx_seg = len(dm_in_seg[dm_in_seg >= gy])
-                mean_in_seg = np.mean(dm_in_seg[dm_in_seg >= gy]) * act
-                vol_seg = self.voxel_vol_ml * num_vx_seg
-                print(f"\t\tInside {seg_name}:\t\t{vol_seg:.2f} cm3 (mean = {mean_in_seg:.2f} Gy)")
+                num_vx_seg = len(dm_in_seg.ravel())
+                num_vx_seg_above_thresh = len(dm_in_seg[dm_in_seg >= gy])
+                try:
+                    mean_in_seg = np.mean(dm_in_seg[dm_in_seg >= gy]) * act
+                    min_in_seg = np.min(dm_in_seg[dm_in_seg >= gy]) * act
+                    max_in_seg = np.max(dm_in_seg[dm_in_seg >= gy]) * act
+                except Exception as e:
+                    mean_in_seg, min_in_seg, max_in_seg = 0, 0, 0
+
+                vol_seg = self.voxel_vol_ml * num_vx_seg_above_thresh
+                print(f"\t\tInside {seg_name}:\t\t{vol_seg:.2f} cm3 ({num_vx_seg_above_thresh / num_vx_seg*100:.1f}%) (mean = {mean_in_seg:.2f} Gy), (min / max = {min_in_seg:.1f} / {max_in_seg:.1f} Gy")
 
         pass
 
 
-    def plot_XGy_regions(self, X=100):
+    def plot_XGy_regions(self, X=100, verif=False, inside_segment=None, resamp_to_ct=True, plot_segments={}, crop=(0, 0)):
 
         # Use meta_spect to interpolate dm to CT-shape?
         # NOTE: sitk cannot handle reading norwegian letters in file-name (ÆØÅ)
-
         import SimpleITK as sitk
-        print(self.CT_path)
+        
+        # Only show 100Gy-region inside segmentation inside_segment, should be same as used to calculate total counts / activity
+        inside_segment = self.segname_tot_counts if None else inside_segment
+        if inside_segment:
+            seg_total_label, seg_total_layer = self.get_segment_label_and_layer_from_lookup(seg_name=inside_segment, return_layer_as_int=True)
+        # SEG_TOTAL = SEG_TOTAL.T         # C-order to F-order (nrrd vs sitk loading)
+        # seg_total = sitk.GetImageFromArray(SEG_TOTAL)
+        seg_total = sitk.ReadImage(self.segmentation_path)
+        SEG_TOTAL = sitk.GetArrayFromImage(seg_total)
+        num_layers_seg = SEG_TOTAL.shape[-1]
+        print(SEG_TOTAL.shape, num_layers_seg)
+
+        # print(seg_total.GetSize())
+        # print(SEG_TOTAL.shape)
+        # print(sitk.GetImageFromArray(SEG_TOTAL).GetSize())
+        # print(sitk.GetImageFromArray(SEG_TOTAL[:, :, :, 1]).GetSize())
+        # print(seg_total.GetDimension())
+        # sys.exit()
+        # print(seg_total.shape, np.unique(seg_total, return_counts=True))
+        # print(self.CT_path)
         ct = sitk.ReadImage(self.CT_path)
-        spect = sitk.ReadImage(self.SPECT_path)
+
+        if verif:
+            spect_pet = sitk.ReadImage(self.PET_path)
+            print(f"\nPLOTTING {X}Gy-regions for {self.adm_act} GBq administerred 90Y")
+            self.act_levels = np.array([1])   # !! Important to keep X Gy limit at X, invariant to X / self.act_levels
+            spect_pet_name = "PET"
+        else:
+            print(f"\nPLOTTING {X}Gy-regions for {self.act_levels} GBq administerred 90Y")
+            spect_pet = sitk.ReadImage(self.SPECT_path)
+            spect_pet_name = "SPECT"
+
         dm = sitk.ReadImage(self.dosemap_path)
+        print("\tseg, dm, spect/pet, ct (original):\t", sitk.GetArrayFromImage(seg_total).shape, sitk.GetArrayFromImage(dm).shape, sitk.GetArrayFromImage(spect_pet).shape, sitk.GetArrayFromImage(ct).shape)
+
 
         ct_size, ct_spacing = ct.GetSize(), ct.GetSpacing()
         # print(ct_size, ct_spacing)
-        # print(dm.GetSize())
+        ct_vol = np.prod(ct_spacing) * 1e-3 # mm3 to cm3
+        spect_pet_vol = np.prod(spect_pet.GetSpacing()) * 1e-3
+        print(f"\tRESAMPLING DOSEMAP from CT to {spect_pet_name} with voxel volume ratio = {ct_vol / spect_pet_vol:.3g} ({ct_vol:.2e} / {spect_pet_vol:.2e})")
 
-        resampler = sitk.ResampleImageFilter()
-        resampler.SetReferenceImage(ct)
-        resampler.SetInterpolator(sitk.sitkLinear)
-        resampler.SetSize(ct_size)
-        resampler.SetOutputSpacing(ct_spacing)
-        resampler.SetTransform(sitk.AffineTransform(3))
+        if resamp_to_ct:
+            resampler = sitk.ResampleImageFilter()
+            resampler.SetReferenceImage(ct)
+            resampler.SetInterpolator(sitk.sitkLinear)
+            resampler.SetSize(ct_size)
+            resampler.SetOutputSpacing(ct_spacing)
+            resampler.SetTransform(sitk.AffineTransform(3))
 
-        # spect_resamp = resampler.Execute(spect)
-        dm_resamp = resampler.Execute(dm)
+            dm_resamp = resampler.Execute(dm)
 
-        CT = sitk.GetArrayFromImage(ct)
-        SPECT = sitk.GetArrayFromImage(spect)
-        DM_RESAMP = sitk.GetArrayFromImage(dm_resamp)
-        # print(CT.shape, DM_RESAMP.shape, np.mean(DM_RESAMP), np.mean(sitk.GetArrayFromImage(dm)))
+            # seg_total_resamp = resampler.Execute(seg_total)
+            seg_total_resamp = [resampler.Execute(sitk.GetImageFromArray(SEG_TOTAL[:, :, :, d])) for d in range(num_layers_seg)]
+            print(SEG_TOTAL.shape)
+            print([np.count_nonzero(L) / np.prod(L.shape) for L in SEG_TOTAL.T])
+
+
+            CT = sitk.GetArrayFromImage(ct)
+            SPECT = sitk.GetArrayFromImage(spect_pet)
+            DM_RESAMP = sitk.GetArrayFromImage(dm_resamp)
+            # print(CT.shape, DM_RESAMP.shape, np.mean(DM_RESAMP), np.mean(sitk.GetArrayFromImage(dm)))
+
+            # sys.exit()
+            # SEG_TOTAL_RESAMP = sitk.GetArrayFromImage(seg_total_resamp)
+            SEG_TOTAL_RESAMP = np.array([sitk.GetArrayFromImage(seg) for seg in seg_total_resamp])
+            print(SEG_TOTAL_RESAMP.shape, np.count_nonzero(SEG_TOTAL_RESAMP))
+            SEG_TOTAL_RESAMP = np.reshape(SEG_TOTAL_RESAMP, (*DM_RESAMP.shape, num_layers_seg))  # THIS IS PROBABLY WRONG
+            print()
+            # print(SEG_TOTAL_RESAMP.shape)
+            # print([np.count_nonzero(L) for L in SEG_TOTAL_RESAMP.T])
+            # print([np.count_nonzero(L) / np.prod(L.shape) for L in SEG_TOTAL_RESAMP.T])
+            # sys.exit()
+
+            print(f"\tSEG original: num vx = {np.count_nonzero(SEG_TOTAL)}, \t\tvolume = {np.count_nonzero(SEG_TOTAL) * spect_pet_vol:.1f} mm3")
+            print(f"\tSEG resample: num vx = {np.count_nonzero(SEG_TOTAL_RESAMP)}, \tvolume = {np.count_nonzero(SEG_TOTAL_RESAMP) * ct_vol:.1f} mm3")
+            # print(np.count_nonzero(SEG_TOTAL_RESAMP), np.count_nonzero(SEG_TOTAL_RESAMP) * ct_vol)
+            # print(ct.GetSize())
+            print("\tseg, dm, spect/pet, ct (resampeled):\t", SEG_TOTAL_RESAMP.shape, DM_RESAMP.shape, SPECT.shape, CT.shape)
+            # sys.exit()
+        # print(dm.shape)
+        # dm_in_tot = dm[seg_total == counts_total_label]
+        # print(dm_in_tot.shape)
+        if inside_segment:
+            print(f"\tVOLUME {X}Gy-region (whole image): {len(DM_RESAMP[DM_RESAMP > X]) * ct_vol:.2f} cm3")
+            DM_RESAMP[SEG_TOTAL_RESAMP[:, :, :, seg_total_layer] != seg_total_label] = 0
+            print(f"\tVOLUME {X}Gy-region (inside {inside_segment}): {len(DM_RESAMP[DM_RESAMP > X]) *ct_vol:.2f} cm3")
+
 
         # print(self.ind_window)  # on SPECT
         ind_window_ct = np.array(self.ind_window) * CT.shape[0] / SPECT.shape[0]
@@ -313,30 +387,77 @@ class InputDataSIRT:
         indices = np.linspace(ind_window_ct[0], ind_window_ct[1], 9).astype(int)
 
 
-        print(self.act_levels)
+        # print(self.act_levels)
+        # x_crop = 50
+        # y_crop = 10
+        x_crop, y_crop = crop
+        # xmin, xmax = x_crop, CT.shape[1] - x_crop
+        # ymin, ymax = y_crop, CT.shape[1] - y_crop
+        xmin, xmax = x_crop
+        ymin, ymax = y_crop
+        # print(xmin, xmax, ymin, ymax)
+        # sys.exit()
+
         # ind = 35
-        fig, ax = plt.subplots(nrows=3, ncols=3, figsize=(10, 10))
+        fig, ax = plt.subplots(nrows=3, ncols=3, figsize=(15.75, 10))
         ax = ax.ravel()
         for i, ind in enumerate(indices):
-            ax[i].imshow(CT[ind, :, :], alpha=1, vmin=-135, vmax=215, cmap="gray")
+            # ax[i].imshow(CT[ind, :, :], alpha=1, vmin=-135, vmax=215, cmap="gray")
+            ax[i].imshow(CT[ind, xmin:xmax, ymin:ymax], alpha=1, vmin=-135, vmax=215, cmap="gray")
             # plt.imshow(SPECT_RESAMP[ind, :, :], alpha=0.50, cmap="hot")
             # dm_ma = np.ma.masked_where(np.logical_not(DM_RESAMP[ind, :, :]), DM_RESAMP[ind, :, :])
 
             # plt.imshow(dm_ma, alpha=0.50, cmap="hot")
-            gy_thresholds = np.array([X, X, X]) / self.act_levels
+            # gy_thresholds = np.array([X, X, X]) / self.act_levels
+            gy_thresholds = np.repeat(X, len(self.act_levels)) / self.act_levels
             # levels = np.sort(levels)
             colors = ["cyan", "yellow", "red"]
-            print(self.act_levels)
-            print(gy_thresholds)
+            # print(self.act_levels)
+            # print(gy_thresholds)
 
-            dm_slice = DM_RESAMP[ind, :, :]
+            # dm_slice = DM_RESAMP[ind, :, :]
+            dm_slice = DM_RESAMP[ind, xmin:xmax, ymin:ymax]
             # plt.imshow(dm_slice, alpha=0.50, cmap="hot")
             ax[i].contour(dm_slice, levels=gy_thresholds, colors=colors)
+
+            # ax[i].contour(SEG_TOTAL_RESAMP[ind, :, :, seg_total_layer], levels=[0.5], colors="green")
+
+
+            c = 0
+            for seg in plot_segments.keys():
+                seg_label, seg_layer = self.get_segment_label_and_layer_from_lookup(seg_name=seg, return_layer_as_int=True)
+                # SEG = SEG_TOTAL_RESAMP[ind, :, :, seg_layer].copy()
+                SEG = SEG_TOTAL_RESAMP[ind, xmin:xmax, ymin:ymax, seg_layer].copy()
+
+                # if i == 4:
+                #     print(seg, seg_label, seg_layer)
+                #     print(np.unique(SEG), seg_label)
+
+
+                SEG[SEG != seg_label] = 0
+                ax[i].contour(SEG, levels=[seg_label-.01], colors=[plot_segments[seg]])
+                # ax[i].contour(SEG, levels=[seg_label], colors=[plot_segments[seg]])
+                c += 1
+
+                # if i == 4:
+                #     print(np.unique(SEG), seg_label)
+
+
             ax[i].axis("off")
+
+            # if i == 3:
+            #     plt.close()
+            #     fig, ax = plt.subplots(figsize=(12,12))
+            #     ax.axis("off")
+            #     ax = [None, None, None, None, ax]
+            # if i == 4:
+            #     fig.tight_layout()
+            #     plt.show()
 
         # fig.tight_layout()
         pad = -.1
         fig.subplots_adjust(wspace=pad, hspace=pad)
+        # print(" ".join(self.act_levels))
         fig.suptitle(f"{X}Gy regions for {''', '''.join(self.act_levels.astype(str))} GBq administerred 90Y")
         plt.show()
 
@@ -344,7 +465,8 @@ class InputDataSIRT:
         pass
 
 
-    def make_dosemap_decay_corrected(self, reference_geometry = "PET"):
+    def make_dosemap_decay_corrected(self, reference_geometry = "PET", save_dosemap=True):
+
         decay_factor = np.exp(+(np.log(2) / sirt.HALF_LIFE_HRS) * self.time_to_img)
         print("\n CREATING dosemap using", reference_geometry, end="\t")
 
@@ -419,15 +541,89 @@ class InputDataSIRT:
 
             print(f"\t{seg_nm} ({vol_seg:.2f} mL):\t\ttotal activity = {act_seg*1e3:.2g} MBq ({act_seg / self.adm_act * 100:.1f}% of {self.adm_act} GBq adm)"
                   f"\tmean / median dose {np.mean(dose_seg):.2f} / {np.median(dose_seg):.2f} Gy")
-
-        nrrd.write(input_data.dosemap_path, dose_map, header=input_header, index_order='C')
-        print("\tDOSEMAP saved as:", input_data.dosemap_path)
+        if save_dosemap:
+            nrrd.write(input_data.dosemap_path, dose_map, header=input_header, index_order='C')
+            print("\tDOSEMAP saved as:", input_data.dosemap_path)
         return dose_map
+
+
+    def plot_volume_covered_by_x_gy_for_activity(self, dm, X=100, seg_name=None, act_min=0.01, act_max=10):
+        print(f"\nCalculating volume covered by {X}Gy given various activity 90Y administerred")
+
+        fig, ax = plt.subplots()
+
+        # segment_names = self.seg_lookup.index.values
+        segment_names = self.seg_operations.index.values
+        print("\tincluding segments", segment_names)
+
+        # seg_name = self.segname_tot_counts if seg_name == None else seg_name
+        for seg_name in segment_names:
+            # print(seg_name)
+            act_levels = np.linspace(act_min, act_max, 100)
+            # print(act_levels)
+
+            seg_label, seg_layer = self.get_segment_label_and_layer_from_lookup(seg_name, return_layer_as_int=False)
+            dm_in_seg = dm[seg_layer == seg_label]
+            vx_in_seg = len(dm_in_seg.ravel())
+            vol_seg = vx_in_seg * self.voxel_vol_ml
+            ratios_seg = []
+
+            for act in act_levels:
+                gy_thresh = X / act
+                # print(act, f"GBq -> thresh = {gy_thresh:.1f} Gy / GBq @ {X} Gy", end="\t")
+                vx_above_thresh = len(dm_in_seg[dm_in_seg >= gy_thresh])
+                ratio = vx_above_thresh / vx_in_seg
+                # print(f"{ratio*100:.1f}% above thresh")
+                # break
+                ratios_seg.append(ratio)
+
+
+            ax.plot(act_levels, ratios_seg, label=f"{seg_name} ({vol_seg:.1f} mL)")
+
+        ax.set_ylim(0, 1)
+        # ax.grid(1)
+        ax.set_xlabel("Administerred activity 90Y [GBq]")
+        ax.set_ylabel("Volume fraction")
+        ax.legend()
+        ax.set_title(f"Volume fractions for segmentations above {X}Gy")
+        plt.show()
+
+        return 1
+
+    def make_dvh(self, dm):
+        segment_names = self.seg_operations.index.values
+        print(f"\nMaking cDVH for segmentations:", segment_names)
+
+        fig, ax = plt.subplots()
+        dose_vals = np.linspace(0, np.max(dm), int(np.max(dm)+1))
+
+        for seg_name in segment_names:
+            seg_label, seg_layer = self.get_segment_label_and_layer_from_lookup(seg_name)
+            dm_in_seg = dm[seg_layer == seg_label]
+            vx_in_seg = len(dm_in_seg.ravel())
+
+            fractions = []
+            for d in dose_vals:
+                vx_above = dm_in_seg[dm_in_seg >= d]
+                frac = len(vx_above) / vx_in_seg
+                fractions.append(frac)
+
+            ax.plot(dose_vals, fractions, label=seg_name)
+            # break
+
+        ax.legend()
+        ax.set_title("Cumulative dose-volume histogram")
+        ax.set_xlabel("Gy / GBq")
+        ax.set_ylabel("Volume fraction")
+        plt.show()
+
+        pass
+
 
 
 def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference_geometry = "SPECT"):
 
-    print("\nCREATING dosemap using", reference_geometry, end="\t")
+    print("\nCREATING dosemap using fraction method with", reference_geometry, end="\t")
 
     if reference_geometry == "SPECT":
         input_path = input_data.SPECT_path
@@ -538,7 +734,7 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
 
         dose_seg = dose_map[counts_seg_layer == counts_seg_index]
 
-        print(f"\t{seg_nm} ({vol_seg:.2f} mL): {seg_total/total_counts * 100:.1f}% of used counts, with mean dose {np.mean(dose_seg):.2f} Gy / GBq")
+        print(f"\t{seg_nm} ({vol_seg:.2f} mL): {seg_total/total_counts * 100:.1f}% of used counts, with mean dose {np.mean(dose_seg):.2f} Gy / GBq, min / max = {np.min(dose_seg):.1f} / {np.max(dose_seg):.1f} Gy / GBq")
 
     # sys.exit()
 
@@ -599,34 +795,47 @@ logger.info("Testing functions")
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
 # patient_top_dir = r"E:\SIRT\EKR52\Slicer"
 # patient_top_dir = r"E:\SIRT\AAMSW82\Slicer"
-# patient_top_dir = r"E:\SIRT\AAMSW82\verif"
-patient_top_dir = r"E:\SIRT\EKR52\verif"
-
+# patient_top_dir = r"E:\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
+# patient_top_dir = r"E:\SIRT\EKR52\verif"; segname_tot_counts=None
+patient_top_dir = r"E:\SIRT\OBS42"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 
 input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
                            # segname_tot_counts="Liver",
-                           segname_tot_counts=None,
+                           segname_tot_counts=segname_tot_counts,
                            # segname_tot_counts="TotalCounts",
-                           # segmentation_name="dosemap_segmentation.seg.nrrd",
-                           segmentation_name="Segmentation.seg.nrrd",
+                           segmentation_name=seg_name,
+                           # segmentation_name="Segmentation.seg.nrrd",
                            settings_name="settings.csv")
-
+verif = False
 # input_data.check_files()  # TODO: do this somewhere
 
 # alias_dict = input_data.segmentation.tumor_alias_dict
 
-# dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
-dose_map = input_data.make_dosemap_decay_corrected()
-sys.exit()
+if not verif:
+    dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
+else:
+    dose_map = input_data.make_dosemap_decay_corrected(save_dosemap=False)
+# sys.exit()
 
-# input_data.act_levels = [1.6]
-input_data.act_levels = [1.0]
+if verif:
+    input_data.act_levels = np.array([1.0])
+
+
+# input_data.act_levels = np.array([5, 4, 3])
+input_data.act_levels = np.array([4, 3, 2])
+# input_data.make_dvh(dose_map)
 
 input_data.calculate_XGy_region_volumes(dose_map)
+
+input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, seg_name="Tumor region", X=100)
+# make_cDVH(dose_map)
+
+
+# input_data.plot_XGy_regions(verif=verif, plot_segments={"LeftLobe":"red"})#, "SuperSelective":"green"})
+input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+# input_data.plot_XGy_regions(verif=verif, plot_segments={"Liver":"green", "Tumor region":"red"})
+
 sys.exit()
-
-input_data.plot_XGy_regions()
-
 
 # calculate_bq_for_segmentations_operations(dose_map, input_data)
 # input_data.seg_operations
