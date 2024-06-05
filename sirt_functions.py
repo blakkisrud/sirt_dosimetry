@@ -100,7 +100,9 @@ def dose_map_func(input_path, output_path="", shunt_factor=0.0):
 
     # Correct for shunt
 
+
     sum_of_counts = sum_of_counts / (1 - shunt_factor)
+    # sum_of_counts = 8580571.42857143
 
     fraction_image = image_as_double / sum_of_counts
 
@@ -108,6 +110,8 @@ def dose_map_func(input_path, output_path="", shunt_factor=0.0):
     # Re-use the image header from the count-image
 
     dose_map = (fraction_image * DOSE_CONSTANT) / (voxel_mass);
+    dose_factor = DOSE_CONSTANT/voxel_mass
+    print("\tdose_factor? = ", dose_factor)
     if output_path:
         nrrd.write(output_path, dose_map, header=image_header, index_order='C')
         print("Dose map saved as nrrd at", output_path)

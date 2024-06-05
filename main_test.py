@@ -294,7 +294,9 @@ class InputDataSIRT:
         import SimpleITK as sitk
         
         # Only show 100Gy-region inside segmentation inside_segment, should be same as used to calculate total counts / activity
-        inside_segment = self.segname_tot_counts if None else inside_segment
+        # TODO: interpolation does not work when inside_segment is not None (?)
+        inside_segment = self.segname_tot_counts if inside_segment == None else inside_segment
+
         if inside_segment:
             seg_total_label, seg_total_layer = self.get_segment_label_and_layer_from_lookup(seg_name=inside_segment, return_layer_as_int=True)
         # SEG_TOTAL = SEG_TOTAL.T         # C-order to F-order (nrrd vs sitk loading)
@@ -316,13 +318,14 @@ class InputDataSIRT:
 
         if verif:
             spect_pet = sitk.ReadImage(self.PET_path)
-            print(f"\nPLOTTING {X}Gy-regions for {self.adm_act} GBq administerred 90Y")
+            print(f"\nPLOTTING {X}Gy-regions for {self.adm_act} GBq administerred 90Y", end="\t")
             self.act_levels = np.array([1])   # !! Important to keep X Gy limit at X, invariant to X / self.act_levels
             spect_pet_name = "PET"
         else:
-            print(f"\nPLOTTING {X}Gy-regions for {self.act_levels} GBq administerred 90Y")
+            print(f"\nPLOTTING {X}Gy-regions for {self.act_levels} GBq administerred 90Y", end="\t")
             spect_pet = sitk.ReadImage(self.SPECT_path)
             spect_pet_name = "SPECT"
+        print(f"(inside {inside_segment})" if inside_segment else "")
 
         dm = sitk.ReadImage(self.dosemap_path)
         print("\tseg, dm, spect/pet, ct (original):\t", sitk.GetArrayFromImage(seg_total).shape, sitk.GetArrayFromImage(dm).shape, sitk.GetArrayFromImage(spect_pet).shape, sitk.GetArrayFromImage(ct).shape)
@@ -481,6 +484,7 @@ class InputDataSIRT:
         print(f"\tDecay factor = {decay_factor:.2f}")
         label_array = self.seg
 
+        adm_act_lsfcorr = self.adm_act * (1 - self.shunt_factor)
 
         # total_mask = np.zeros(input_array.shape)
         # assert input_array.shape == label_array.shape[:-1] == total_mask.shape
@@ -507,6 +511,9 @@ class InputDataSIRT:
 
 
         activity_map = input_array * decay_factor * self.voxel_vol_ml
+        # print(self.voxel_vol_ml)
+        # print((d/10)**3)
+        # sys.exit()
         activity_map *= 1e-9    # Bq to GBq
 
         if self.segname_tot_counts == None:
@@ -517,10 +524,13 @@ class InputDataSIRT:
         else:
             counts_total_index, counts_total_layer = self.get_segment_label_and_layer_from_lookup(self.segname_tot_counts)
             print("\t", counts_total_layer.shape, input_data.seg.shape)
-            sum_act = np.sum(activity_map[counts_total_layer == counts_total_index]) / (1-self.shunt_factor)
-
-            print(f"\tSum of activity in {self.segname_tot_counts} ({self.shunt_factor*100:.0f}% LSF-corrected) = "
-                  f"{sum_act:.3e} Bq ({sum_act / (self.adm_act)*100:.1f} % of {self.adm_act} GBq administerred)")
+            # sum_act = np.sum(activity_map[counts_total_layer == counts_total_index]) / (1-self.shunt_factor)
+            sum_act = np.sum(activity_map[counts_total_layer == counts_total_index])
+            # print(f"\tSum of activity in {self.segname_tot_counts} ({self.shunt_factor*100:.0f}% LSF-corrected) = "
+            #       f"{sum_act:.3e} Bq ({sum_act / (self.adm_act)*100:.1f} % of {self.adm_act} GBq administerred)")
+            print(f"\tSum of activity in {self.segname_tot_counts}:"
+                  f" = {sum_act:.2e} Bq -> {sum_act / (adm_act_lsfcorr)*100:.1f} % of {adm_act_lsfcorr:.2f} GBq administerred"
+                  f" ({self.shunt_factor*100:.0f}% LSF-corrected from {self.adm_act} GBq)")
 
 
         dose_map = activity_map * np.log(2)**-1 * sirt.HALF_LIFE_SEC * sirt.S_FACTOR * s_scaling_factor
@@ -535,11 +545,12 @@ class InputDataSIRT:
             num_vox_seg = len(seg_data)
             vol_seg = input_data.voxel_vol_ml * num_vox_seg
 
-            act_seg = np.sum(activity_map[counts_seg_layer == counts_seg_index]) / (1-self.shunt_factor)
+            # act_seg = np.sum(activity_map[counts_seg_layer == counts_seg_index]) / (1-self.shunt_factor)
+            act_seg = np.sum(activity_map[counts_seg_layer == counts_seg_index])
 
             dose_seg = dose_map[counts_seg_layer == counts_seg_index]
 
-            print(f"\t{seg_nm} ({vol_seg:.2f} mL):\t\ttotal activity = {act_seg*1e3:.2g} MBq ({act_seg / self.adm_act * 100:.1f}% of {self.adm_act} GBq adm)"
+            print(f"\t{seg_nm} ({vol_seg:.2f} mL):\t\ttotal activity = {act_seg*1e3:.2e} MBq ({act_seg / adm_act_lsfcorr * 100:.1f}% of {adm_act_lsfcorr:.2f} GBq LSF-corr adm)"
                   f"\tmean / median dose {np.mean(dose_seg):.2f} / {np.median(dose_seg):.2f} Gy")
         if save_dosemap:
             nrrd.write(input_data.dosemap_path, dose_map, header=input_header, index_order='C')
@@ -547,18 +558,41 @@ class InputDataSIRT:
         return dose_map
 
 
-    def plot_volume_covered_by_x_gy_for_activity(self, dm, X=100, seg_name=None, act_min=0.01, act_max=10):
+    def plot_volume_covered_by_x_gy_for_activity(self, dm, X=100, segment_names=None, act_min=0.01, act_max=10):
         print(f"\nCalculating volume covered by {X}Gy given various activity 90Y administerred")
 
-        fig, ax = plt.subplots()
+        if type(X) == int:
+            fig, ax = plt.subplots()
+        elif type(X) == dict:
+            fig, axes = plt.subplots(ncols=len(set(X.values())))
+            # print(axes)
+            # print(np.unique(X.values()))
+            # print(len(axes))
+            # sys.exit()
+            ax_dict = {}
+            for i, X_thresh in enumerate(set(X.values())):
+                ax_dict[X_thresh] = axes[i]
+
+        else:
+            print("NO")
+            sys.exit()
 
         # segment_names = self.seg_lookup.index.values
-        segment_names = self.seg_operations.index.values
+        if segment_names == None and type(X) == int:
+            segment_names = self.seg_operations.index.values
+        elif segment_names == None and type(X) == dict:
+            segment_names = X.keys()
         print("\tincluding segments", segment_names)
 
         # seg_name = self.segname_tot_counts if seg_name == None else seg_name
-        for seg_name in segment_names:
+        for j, seg_name in enumerate(segment_names):
             # print(seg_name)
+            if X == int:
+                X_seg = X
+            else:
+                X_seg = X[seg_name]
+                ax = ax_dict[X_seg]
+            # X_seg = X if X == int else X[seg_name]
             act_levels = np.linspace(act_min, act_max, 100)
             # print(act_levels)
 
@@ -569,7 +603,8 @@ class InputDataSIRT:
             ratios_seg = []
 
             for act in act_levels:
-                gy_thresh = X / act
+                # gy_thresh = X / act
+                gy_thresh = X_seg / act
                 # print(act, f"GBq -> thresh = {gy_thresh:.1f} Gy / GBq @ {X} Gy", end="\t")
                 vx_above_thresh = len(dm_in_seg[dm_in_seg >= gy_thresh])
                 ratio = vx_above_thresh / vx_in_seg
@@ -578,24 +613,27 @@ class InputDataSIRT:
                 ratios_seg.append(ratio)
 
 
-            ax.plot(act_levels, ratios_seg, label=f"{seg_name} ({vol_seg:.1f} mL)")
+            ax.plot(act_levels, ratios_seg, label=f"{seg_name} ({vol_seg:.0f} mL)", c=f"C{j}")
 
-        ax.set_ylim(0, 1)
-        # ax.grid(1)
-        ax.set_xlabel("Administerred activity 90Y [GBq]")
-        ax.set_ylabel("Volume fraction")
-        ax.legend()
-        ax.set_title(f"Volume fractions for segmentations above {X}Gy")
+            ax.set_ylim(0, 1)
+            # ax.grid(1)
+            ax.set_xlabel("Administered activity $^{90}$Y [GBq]")
+            ax.set_ylabel(f"Volume fraction $\geq$ {X_seg} Gy")
+            ax.legend()
+            # ax.set_title(f"Volume fractions for segmentations above {X}Gy")
         plt.show()
 
         return 1
 
-    def make_dvh(self, dm):
-        segment_names = self.seg_operations.index.values
+    def make_dvh(self, dm, segment_names=None, save=False):
+        if segment_names == None:
+            segment_names = self.seg_operations.index.values
         print(f"\nMaking cDVH for segmentations:", segment_names)
 
         fig, ax = plt.subplots()
-        dose_vals = np.linspace(0, np.max(dm), int(np.max(dm)+1))
+
+        dose_vals = np.arange(0, np.max(dm), 1)
+        df_dvh = pd.DataFrame(columns=segment_names, index=dose_vals, dtype=float)
 
         for seg_name in segment_names:
             seg_label, seg_layer = self.get_segment_label_and_layer_from_lookup(seg_name)
@@ -609,12 +647,18 @@ class InputDataSIRT:
                 fractions.append(frac)
 
             ax.plot(dose_vals, fractions, label=seg_name)
-            # break
+
+            df_dvh.loc[:, seg_name] = fractions
 
         ax.legend()
         ax.set_title("Cumulative dose-volume histogram")
         ax.set_xlabel("Gy / GBq")
         ax.set_ylabel("Volume fraction")
+
+        if save:
+            dvh_path = os.path.join(self.patient_top_dir, "dvh.csv")
+            df_dvh.to_csv(dvh_path)
+            print("\tDVH saved as:", dvh_path)
         plt.show()
 
         pass
@@ -698,10 +742,12 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     num_vox_in_whole_image = np.prod(input_array.shape)
     vol_total_counts = num_vox_in_total_counts * input_data.voxel_vol_ml
 
-    print("\tTOTAL COUNTS:", total_counts, f" = {total_counts / np.sum(input_array)*100:.1f}% of counts in whole image, in {num_vox_in_total_counts / num_vox_in_whole_image * 100:.1f} % of voxels ({vol_total_counts:.2f} mL)")
 
 
     total_counts = total_counts / (1 - shunt_factor)
+
+    print("\tTOTAL COUNTS:", total_counts, f" = {total_counts / np.sum(input_array)*100:.1f}% of counts in whole image, in {num_vox_in_total_counts / num_vox_in_whole_image * 100:.1f} % of voxels ({vol_total_counts:.2f} mL)")
+
 
     image_as_double = input_array.astype(np.float32)
 
@@ -719,6 +765,7 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     # mean_old = np.mean(dose_map)
 
     dose_factor = np.log(2)**-1 * sirt.HALF_LIFE_SEC * sirt.S_FACTOR * s_scaling_factor
+    print("\tdose_factor=", dose_factor)
     dose_map = fraction_image * dose_factor
     # print(np.mean(dose_map), np.mean(dose_map) / mean_old)
 
@@ -787,6 +834,44 @@ def voxel_values_by_segment_name(input_data: InputDataSIRT, dose_map, segment_na
     return segment_voxels
 
 
+def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0):
+    path_dvh_workup = os.path.join(patient_top_dir, "workup", "dvh.csv")
+    path_dvh_verif = os.path.join(patient_top_dir, "verif", "dvh.csv")
+
+
+
+    df_workup = pd.read_csv(path_dvh_workup, index_col=0)   # Gy / GBq
+    df_verif = pd.read_csv(path_dvh_verif, index_col=0)
+
+    # Scale workup from Gy / GBq to Gy using administerred activity in therapy (GBq)
+    print(f"\tscaling work-up to {act_scale_workup} GBq administered 90Y")
+    df_workup.index = df_workup.index * act_scale_workup
+
+    dose_vals = df_workup.index.values if df_workup.index.max() < df_verif.index.max() else df_verif.index.values
+
+    # print(df_verif.index[df_verif.index <= max(dose_vals)])
+    df_workup = df_workup.loc[df_workup.index <= max(dose_vals)]
+    df_verif = df_verif.loc[df_verif.index <= max(dose_vals)]
+    print("COMPARING cDVHs from workup to post-therapy")
+    print(df_verif.shape, df_workup.shape)
+
+    fig, ax = plt.subplots()
+
+    for i, seg in enumerate(df_workup.columns):
+        c = f"C{i}"
+        # ax.plot(df_workup.index, df_workup[seg], ":", label=f"{seg} (workup)", c=c)
+        # ax.plot(df_verif.index, df_verif[seg], label=f"{seg} (verif)", c=c)
+        ax.plot(df_workup.index, df_workup[seg], ":", c=c)
+        ax.plot(df_verif.index, df_verif[seg], label=f"{seg}", c=c)
+
+    ax.set_xlabel("Dose (Gy)")
+    ax.set_ylabel("Volume fraction")
+    ax.legend()
+
+    plt.show()
+
+    pass
+
 
 logger = sirt.logger
 
@@ -797,7 +882,9 @@ logger.info("Testing functions")
 # patient_top_dir = r"E:\SIRT\AAMSW82\Slicer"
 # patient_top_dir = r"E:\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
 # patient_top_dir = r"E:\SIRT\EKR52\verif"; segname_tot_counts=None
-patient_top_dir = r"E:\SIRT\OBS42"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
+# patient_top_dir = r"E:\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\workup"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
+patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 
 input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
                            # segname_tot_counts="Liver",
@@ -806,7 +893,9 @@ input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
                            segmentation_name=seg_name,
                            # segmentation_name="Segmentation.seg.nrrd",
                            settings_name="settings.csv")
-verif = False
+verif = True
+save_dm = False
+save_dvh = True
 # input_data.check_files()  # TODO: do this somewhere
 
 # alias_dict = input_data.segmentation.tumor_alias_dict
@@ -814,28 +903,37 @@ verif = False
 if not verif:
     dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
 else:
-    dose_map = input_data.make_dosemap_decay_corrected(save_dosemap=False)
+    dose_map = input_data.make_dosemap_decay_corrected(save_dosemap=save_dm)
+
+from sirt_functions import dose_map_func
+# dose_map_func(input_data.SPECT_path, output_path="dose_map_old.nrrd", shunt_factor=0.02)
+
 # sys.exit()
 
 if verif:
     input_data.act_levels = np.array([1.0])
+else:
+    input_data.act_levels = np.array([5, 4, 3])
 
+# input_data.act_levels = np.array([4, 3, 2])
 
-# input_data.act_levels = np.array([5, 4, 3])
-input_data.act_levels = np.array([4, 3, 2])
-# input_data.make_dvh(dose_map)
+# input_data.calculate_XGy_region_volumes(dose_map, X=100)
+# input_data.calculate_XGy_region_volumes(dose_map, X=40)
 
-input_data.calculate_XGy_region_volumes(dose_map)
-
-input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, seg_name="Tumor region", X=100)
+# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, seg_name="Tumor region", X=100)
+# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100, "Left liver":40, "Right liver without tumour":40})
 # make_cDVH(dose_map)
+# input_data.make_dvh(dose_map, segment_names=["Tumour", "Left liver", "Right liver without tumour"], save=save_dvh)
 
+compare_dvh_workup_verif(patient_top_dir=r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42", act_scale_workup=input_data.adm_act)
 
+# input_data.ind_window = [30, 85]
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"LeftLobe":"red"})#, "SuperSelective":"green"})
-input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+# input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+# input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+sys.exit()
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"Liver":"green", "Tumor region":"red"})
 
-sys.exit()
 
 # calculate_bq_for_segmentations_operations(dose_map, input_data)
 # input_data.seg_operations
