@@ -92,8 +92,11 @@ class InputDataSIRT:
         self.PET_path = os.path.join(self.patient_top_dir, "PET.nrrd")
 
         segmentation_name = kwargs.get("segmentation_name", "Segmentation.seg.nrrd")
-        self.segmentation_path = os.path.join(
-            self.patient_top_dir, segmentation_name)
+        if segmentation_name:
+            self.segmentation_path = os.path.join(
+                self.patient_top_dir, segmentation_name)
+        else:
+            self.segmentation_path = None
 
         self.segname_tot_counts = kwargs.get("segname_tot_counts", "counts_tot")
 
@@ -106,14 +109,20 @@ class InputDataSIRT:
         settings_name = kwargs.get("settings_name", "settings.csv")
         if settings_name:
             self.load_settings(os.path.join(self.patient_top_dir, settings_name))    # LFS, time-points, and seg_operations, seg_lookup, ind_window (for plotting)
-        else:
-            self.seg_lookup = pd.DataFrame(columns=["Layer", "Label"], dtype=int)
-            print("settings.csv is required (for now)")
-            sys.exit()
+            self.load_segmentations(path=self.segmentation_path, include_extras=True)
 
-        # self.lookup_table_path = os.path.join(
-        #     self.patient_top_dir, "Segmentation_1-label_ColorTable.ctbl")
-        self.load_segmentations(path=self.segmentation_path, include_extras=True)
+        else:
+            print("\tNO SETTINGS FOUND: assuming dt = 0 hrs, shunt_factor = 0, adm_act = 1 GBq -> OVERWRITE MANUALLY AFTER INIT")
+            # self.seg = np.zeros(shape=)
+            self.seg = None
+            self.seg_lookup = pd.DataFrame()
+            self.time_to_img = 0
+            self.shunt_factor = 0
+            self.adm_act = 1
+            # self.seg_lookup = pd.DataFrame(columns=["Layer", "Label"], dtype=int)
+            # print("settings.csv is required (for now)")
+            # sys.exit()
+            pass
 
 
     def load_segmentations(self, path, include_extras=False):
@@ -167,8 +176,10 @@ class InputDataSIRT:
             self.seg_lookup.loc[seg_nm, ["Layer", "Label"]] = get_layer_label_values_from_meta(meta, segment=seg_names_meta[seg_nm])
         # print(self.seg_lookup)
         # sys.exit()
-        self.seg_lookup = self.seg_lookup.astype(int)
-
+        try:
+            self.seg_lookup = self.seg_lookup.astype(int)
+        except Exception as e:
+            print(*e.args)
 
         # Check if total counts segmentation contains all other segmentations as subsets, as is implied when using
         # fraction-map for dosimetry, excluding lungs (as lung counts are assumed included in the LSF)
@@ -235,7 +246,10 @@ class InputDataSIRT:
     def get_segment_label_and_layer_from_lookup(self, seg_name, return_layer_as_int=False):
         layer = self.seg_lookup.loc[seg_name, "Layer"]
         label = self.seg_lookup.loc[seg_name, "Label"]
-        seg_layer = self.seg[:, :, :, layer]
+        if self.seg.ndim == 4:
+            seg_layer = self.seg[:, :, :, int(layer)]
+        else:
+            seg_layer = self.seg
         if return_layer_as_int:
             return label, layer
         else:
@@ -301,10 +315,12 @@ class InputDataSIRT:
             seg_total_label, seg_total_layer = self.get_segment_label_and_layer_from_lookup(seg_name=inside_segment, return_layer_as_int=True)
         # SEG_TOTAL = SEG_TOTAL.T         # C-order to F-order (nrrd vs sitk loading)
         # seg_total = sitk.GetImageFromArray(SEG_TOTAL)
-        seg_total = sitk.ReadImage(self.segmentation_path)
-        SEG_TOTAL = sitk.GetArrayFromImage(seg_total)
-        num_layers_seg = SEG_TOTAL.shape[-1]
-        print(SEG_TOTAL.shape, num_layers_seg)
+
+        if self.segmentation_path:
+            seg_total = sitk.ReadImage(self.segmentation_path)
+            SEG_TOTAL = sitk.GetArrayFromImage(seg_total)
+            num_layers_seg = SEG_TOTAL.shape[-1]
+        # print(SEG_TOTAL.shape, num_layers_seg)
 
         # print(seg_total.GetSize())
         # print(SEG_TOTAL.shape)
@@ -319,7 +335,7 @@ class InputDataSIRT:
         if verif:
             spect_pet = sitk.ReadImage(self.PET_path)
             print(f"\nPLOTTING {X}Gy-regions for {self.adm_act} GBq administerred 90Y", end="\t")
-            self.act_levels = np.array([1])   # !! Important to keep X Gy limit at X, invariant to X / self.act_levels
+            self.act_levels = np.array([1])   # !! Important to keep X Gy limit at X, invariant to X / self.act_levels as voxel units are already Gy (NOT per GBq as for work-up)
             spect_pet_name = "PET"
         else:
             print(f"\nPLOTTING {X}Gy-regions for {self.act_levels} GBq administerred 90Y", end="\t")
@@ -328,7 +344,10 @@ class InputDataSIRT:
         print(f"(inside {inside_segment})" if inside_segment else "")
 
         dm = sitk.ReadImage(self.dosemap_path)
-        print("\tseg, dm, spect/pet, ct (original):\t", sitk.GetArrayFromImage(seg_total).shape, sitk.GetArrayFromImage(dm).shape, sitk.GetArrayFromImage(spect_pet).shape, sitk.GetArrayFromImage(ct).shape)
+        if self.segmentation_path:
+            print("\tseg, dm, spect/pet, ct (original):\t", sitk.GetArrayFromImage(seg_total).shape, sitk.GetArrayFromImage(dm).shape, sitk.GetArrayFromImage(spect_pet).shape, sitk.GetArrayFromImage(ct).shape)
+        else:
+            print("\tdm, spect/pet, ct (original):\t", sitk.GetArrayFromImage(dm).shape, sitk.GetArrayFromImage(spect_pet).shape, sitk.GetArrayFromImage(ct).shape)
 
 
         ct_size, ct_spacing = ct.GetSize(), ct.GetSpacing()
@@ -348,9 +367,10 @@ class InputDataSIRT:
             dm_resamp = resampler.Execute(dm)
 
             # seg_total_resamp = resampler.Execute(seg_total)
-            seg_total_resamp = [resampler.Execute(sitk.GetImageFromArray(SEG_TOTAL[:, :, :, d])) for d in range(num_layers_seg)]
-            print(SEG_TOTAL.shape)
-            print([np.count_nonzero(L) / np.prod(L.shape) for L in SEG_TOTAL.T])
+            if self.segmentation_path:
+                seg_total_resamp = [resampler.Execute(sitk.GetImageFromArray(SEG_TOTAL[:, :, :, d])) for d in range(num_layers_seg)]
+            # print(SEG_TOTAL.shape)
+            # print([np.count_nonzero(L) / np.prod(L.shape) for L in SEG_TOTAL.T])
 
 
             CT = sitk.GetArrayFromImage(ct)
@@ -360,21 +380,18 @@ class InputDataSIRT:
 
             # sys.exit()
             # SEG_TOTAL_RESAMP = sitk.GetArrayFromImage(seg_total_resamp)
-            SEG_TOTAL_RESAMP = np.array([sitk.GetArrayFromImage(seg) for seg in seg_total_resamp])
-            print(SEG_TOTAL_RESAMP.shape, np.count_nonzero(SEG_TOTAL_RESAMP))
-            SEG_TOTAL_RESAMP = np.reshape(SEG_TOTAL_RESAMP, (*DM_RESAMP.shape, num_layers_seg))  # THIS IS PROBABLY WRONG
             print()
-            # print(SEG_TOTAL_RESAMP.shape)
-            # print([np.count_nonzero(L) for L in SEG_TOTAL_RESAMP.T])
-            # print([np.count_nonzero(L) / np.prod(L.shape) for L in SEG_TOTAL_RESAMP.T])
-            # sys.exit()
 
-            print(f"\tSEG original: num vx = {np.count_nonzero(SEG_TOTAL)}, \t\tvolume = {np.count_nonzero(SEG_TOTAL) * spect_pet_vol:.1f} mm3")
-            print(f"\tSEG resample: num vx = {np.count_nonzero(SEG_TOTAL_RESAMP)}, \tvolume = {np.count_nonzero(SEG_TOTAL_RESAMP) * ct_vol:.1f} mm3")
-            # print(np.count_nonzero(SEG_TOTAL_RESAMP), np.count_nonzero(SEG_TOTAL_RESAMP) * ct_vol)
-            # print(ct.GetSize())
-            print("\tseg, dm, spect/pet, ct (resampeled):\t", SEG_TOTAL_RESAMP.shape, DM_RESAMP.shape, SPECT.shape, CT.shape)
-            # sys.exit()
+            if self.segmentation_path:
+                SEG_TOTAL_RESAMP = np.array([sitk.GetArrayFromImage(seg) for seg in seg_total_resamp])
+                # print(SEG_TOTAL_RESAMP.shape, np.count_nonzero(SEG_TOTAL_RESAMP))
+                SEG_TOTAL_RESAMP = np.reshape(SEG_TOTAL_RESAMP, (*DM_RESAMP.shape, num_layers_seg))  # THIS IS PROBABLY WRONG
+                print(f"\tSEG original: num vx = {np.count_nonzero(SEG_TOTAL)}, \t\tvolume = {np.count_nonzero(SEG_TOTAL) * spect_pet_vol:.1f} mm3")
+                print(f"\tSEG resample: num vx = {np.count_nonzero(SEG_TOTAL_RESAMP)}, \tvolume = {np.count_nonzero(SEG_TOTAL_RESAMP) * ct_vol:.1f} mm3")
+                print("\tseg, dm, spect/pet, ct (resampeled):\t", SEG_TOTAL_RESAMP.shape, DM_RESAMP.shape, SPECT.shape, CT.shape)
+            else:
+                print("\tdm, spect/pet, ct (resampeled):\t", DM_RESAMP.shape, SPECT.shape, CT.shape)
+
         # print(dm.shape)
         # dm_in_tot = dm[seg_total == counts_total_label]
         # print(dm_in_tot.shape)
@@ -404,6 +421,8 @@ class InputDataSIRT:
         # ind = 35
         fig, ax = plt.subplots(nrows=3, ncols=3, figsize=(15.75, 10))
         ax = ax.ravel()
+        # print(CT.shape, DM_RESAMP.shape, indices)
+
         for i, ind in enumerate(indices):
             # ax[i].imshow(CT[ind, :, :], alpha=1, vmin=-135, vmax=215, cmap="gray")
             ax[i].imshow(CT[ind, xmin:xmax, ymin:ymax], alpha=1, vmin=-135, vmax=215, cmap="gray")
@@ -587,11 +606,13 @@ class InputDataSIRT:
         # seg_name = self.segname_tot_counts if seg_name == None else seg_name
         for j, seg_name in enumerate(segment_names):
             # print(seg_name)
-            if X == int:
+
+            if type(X) == int:
                 X_seg = X
             else:
                 X_seg = X[seg_name]
                 ax = ax_dict[X_seg]
+
             # X_seg = X if X == int else X[seg_name]
             act_levels = np.linspace(act_min, act_max, 100)
             # print(act_levels)
@@ -834,7 +855,7 @@ def voxel_values_by_segment_name(input_data: InputDataSIRT, dose_map, segment_na
     return segment_voxels
 
 
-def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0):
+def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0, include_seg=None):
     path_dvh_workup = os.path.join(patient_top_dir, "workup", "dvh.csv")
     path_dvh_verif = os.path.join(patient_top_dir, "verif", "dvh.csv")
 
@@ -842,10 +863,14 @@ def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0):
 
     df_workup = pd.read_csv(path_dvh_workup, index_col=0)   # Gy / GBq
     df_verif = pd.read_csv(path_dvh_verif, index_col=0)
-
+    
+    print("COMPARING cDVH work-up to verif:")
     # Scale workup from Gy / GBq to Gy using administerred activity in therapy (GBq)
+    print("\twork-up:", df_workup.shape, df_workup.columns.values)
+    print("\tverif:", df_verif.shape, df_verif.columns.values)
     print(f"\tscaling work-up to {act_scale_workup} GBq administered 90Y")
     df_workup.index = df_workup.index * act_scale_workup
+
 
     dose_vals = df_workup.index.values if df_workup.index.max() < df_verif.index.max() else df_verif.index.values
 
@@ -857,12 +882,25 @@ def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0):
 
     fig, ax = plt.subplots()
 
-    for i, seg in enumerate(df_workup.columns):
+    if include_seg == None:
+        include_seg = df_workup.columns
+
+    for i, seg in enumerate(include_seg):
         c = f"C{i}"
         # ax.plot(df_workup.index, df_workup[seg], ":", label=f"{seg} (workup)", c=c)
         # ax.plot(df_verif.index, df_verif[seg], label=f"{seg} (verif)", c=c)
-        ax.plot(df_workup.index, df_workup[seg], ":", c=c)
-        ax.plot(df_verif.index, df_verif[seg], label=f"{seg}", c=c)
+
+        # Label == name
+        # ax.plot(df_workup.index, df_workup[seg], ":", c=c)
+        # ax.plot(df_verif.index, df_verif[seg], label=f"{seg}", c=c)
+
+        # Label == verif / workup
+        ax.plot(df_workup.index, df_workup[seg], ":", c=c, label="Work-up")
+        ax.plot(df_verif.index, df_verif[seg], label=f"Post-therapy", c=c)
+
+        # print(df_workup[seg])
+        print(f"MEDIAN workup =", np.median(df_workup[seg]), f"verif =", np.median(df_verif[seg]))
+
 
     ax.set_xlabel("Dose (Gy)")
     ax.set_ylabel("Volume fraction")
@@ -877,14 +915,22 @@ logger = sirt.logger
 
 logger.info("Testing functions")
 
+# seg_name = "Segmentation.seg.nrrd"
+seg_name = None
+segname_tot_counts = None
+settings_name = None
+
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
 # patient_top_dir = r"E:\SIRT\EKR52\Slicer"
 # patient_top_dir = r"E:\SIRT\AAMSW82\Slicer"
 # patient_top_dir = r"E:\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
-# patient_top_dir = r"E:\SIRT\EKR52\verif"; segname_tot_counts=None
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\verif"; segname_tot_counts=None
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\Slicer"; segname_tot_counts=None; seg_name="SegmentLabel_johan.seg.nrrd"
 # patient_top_dir = r"E:\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\workup"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
-patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
+patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\PCO59\verif"
+
 
 input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
                            # segname_tot_counts="Liver",
@@ -892,18 +938,31 @@ input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
                            # segname_tot_counts="TotalCounts",
                            segmentation_name=seg_name,
                            # segmentation_name="Segmentation.seg.nrrd",
-                           settings_name="settings.csv")
+                           settings_name=settings_name)
+
 verif = True
-save_dm = False
+save_dm = True
 save_dvh = True
 # input_data.check_files()  # TODO: do this somewhere
 
 # alias_dict = input_data.segmentation.tumor_alias_dict
 
+# MANUAL entries if no setting.csv:
+input_data.time_to_img = 2.25
+input_data.shunt_factor = 0.05
+input_data.ind_window = [0, 62]
+input_data.adm_act = 3.053
+print(f"\tMANUAL entries: time_to_img = {input_data.time_to_img} hrs, shunt_factor = {input_data.shunt_factor}, adm_act = {input_data.adm_act} GBq")
+
+
 if not verif:
     dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
 else:
     dose_map = input_data.make_dosemap_decay_corrected(save_dosemap=save_dm)
+
+# dose_map, _ = nrrd.read(os.path.join(patient_top_dir, "dosemap_LSF-0.04_sum-LIVER_redistr.nrrd"), index_order="C")
+# print(dose_map.shape)
+
 
 from sirt_functions import dose_map_func
 # dose_map_func(input_data.SPECT_path, output_path="dose_map_old.nrrd", shunt_factor=0.02)
@@ -920,16 +979,18 @@ else:
 # input_data.calculate_XGy_region_volumes(dose_map, X=100)
 # input_data.calculate_XGy_region_volumes(dose_map, X=40)
 
-# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, seg_name="Tumor region", X=100)
+# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, segment_names=["TumorLobe"], X=100)
 # input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100, "Left liver":40, "Right liver without tumour":40})
+# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100})
 # make_cDVH(dose_map)
-# input_data.make_dvh(dose_map, segment_names=["Tumour", "Left liver", "Right liver without tumour"], save=save_dvh)
+# input_data.make_dvh(dose_map, segment_names=["TumorLobe"], save=save_dvh)
 
-compare_dvh_workup_verif(patient_top_dir=r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42", act_scale_workup=input_data.adm_act)
+# compare_dvh_workup_verif(patient_top_dir=os.path.join(patient_top_dir, ".."),
+#                          act_scale_workup=input_data.adm_act, include_seg=["Tumour"])
 
 # input_data.ind_window = [30, 85]
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"LeftLobe":"red"})#, "SuperSelective":"green"})
-# input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
 # input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
 sys.exit()
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"Liver":"green", "Tumor region":"red"})
