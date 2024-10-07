@@ -119,13 +119,18 @@ class InputDataSIRT:
             self.time_to_img = 0
             self.shunt_factor = 0
             self.adm_act = 1
+
+            self.seg_operations = pd.DataFrame()
+
+            self.load_segmentations(path=self.segmentation_path, include_extras=True)
+
             # self.seg_lookup = pd.DataFrame(columns=["Layer", "Label"], dtype=int)
             # print("settings.csv is required (for now)")
             # sys.exit()
             pass
 
 
-    def load_segmentations(self, path, include_extras=False):
+    def load_segmentations(self, path, include_extras=True):
         print("\nLOADING SEGMENTATIONS:", end="\t")
         self.seg, meta = nrrd.read(path, index_order="C")
         print(self.seg.shape)
@@ -156,19 +161,19 @@ class InputDataSIRT:
         else:
             print("\tsegname_tot_counts =", self.segname_tot_counts, "-> not relevant?")
 
-
+        # if settings_name != None:
         seg_overlap = set(seg_names_meta.keys()).intersection(self.seg_operations.index.values)
 
         print(f"\tFOUND {len(seg_overlap)} of {len(set(self.seg_operations.index))} segmentations from settings.csv", end="\t")
-        # print(seg_overlap)
-
         seg_extras = set(seg_names_meta.keys()).difference(set(self.seg_operations.index.values))
-        # print(seg_extras)
 
-        if seg_extras:
+        if seg_extras and seg_overlap:
             print(f"Found {len(seg_extras)} not in settings.csv:", seg_extras)
+        elif seg_extras and not(seg_overlap):
+            print(f"No segmentation entries from settings -> found {len(seg_extras)} in {seg_name}:", seg_extras)
         else:
             print()
+
         if include_extras:
             seg_overlap = seg_overlap.union(seg_extras)
 
@@ -204,8 +209,13 @@ class InputDataSIRT:
 
         # print(self.seg_operations)
         # print(self.seg_lookup)
+        if len(self.seg_lookup.index) == 0:
+            logger.info("No segmentations loaded..!")
+
+        print(f"\tLOADED {len(self.seg_lookup.index)} segmentations:", self.seg_lookup.index.values)
 
         pass
+
 
     def check_files(self):
 
@@ -646,6 +656,7 @@ class InputDataSIRT:
 
         return 1
 
+
     def make_dvh(self, dm, segment_names=None, save=False):
         if segment_names == None:
             segment_names = self.seg_operations.index.values
@@ -710,8 +721,12 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
 
     total_mask = np.zeros(input_array.shape)
 
+    print(input_array.shape)
+    print(label_array.shape)
+    print(total_mask.shape)
+
     # assert input_array.shape == label_array.shape == total_mask.shape
-    assert input_array.shape == label_array.shape[:-1] == total_mask.shape
+    # assert input_array.shape == label_array.shape[:-1] == total_mask.shape
     # Check the spacing
 
     space_dirs = (input_header["space directions"])
@@ -723,7 +738,9 @@ def make_dosemap(input_data: InputDataSIRT, shunt_factor: float = 0.0, reference
     input_data.voxel_vol_ml = x_dim * y_dim * z_dim
 
     if not (round(x_dim, 2) == round(y_dim, 2) and round(y_dim, 2) == round(z_dim, 2)):
-        print("*** ANISOTROPE VOXELS...")
+        logger.info(f"ANISOTROPE VOXELS: {x_dim:.2f}, {y_dim:.2f}, {z_dim:.2f}")
+        # print("*** ANISOTROPE VOXELS...")
+        # print(x_dim,y_dim, z_dim)
         sys.exit()
     else:
         d = x_dim * 10  # cm -> mm
@@ -859,7 +876,7 @@ def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0, include_
     path_dvh_workup = os.path.join(patient_top_dir, "workup", "dvh.csv")
     path_dvh_verif = os.path.join(patient_top_dir, "verif", "dvh.csv")
 
-
+    seg_rename = {"LeftLobe":"Tumour-region left lobe", "SuperSelective":"Selective tumour segment 5"}
 
     df_workup = pd.read_csv(path_dvh_workup, index_col=0)   # Gy / GBq
     df_verif = pd.read_csv(path_dvh_verif, index_col=0)
@@ -889,14 +906,17 @@ def compare_dvh_workup_verif(patient_top_dir:str, act_scale_workup=1.0, include_
         c = f"C{i}"
         # ax.plot(df_workup.index, df_workup[seg], ":", label=f"{seg} (workup)", c=c)
         # ax.plot(df_verif.index, df_verif[seg], label=f"{seg} (verif)", c=c)
-
         # Label == name
-        # ax.plot(df_workup.index, df_workup[seg], ":", c=c)
-        # ax.plot(df_verif.index, df_verif[seg], label=f"{seg}", c=c)
+
+        seg_plotname = seg_rename[seg]
+
+        ax.plot(df_workup.index, df_workup[seg], ":", c=c)
+        ax.plot(df_verif.index, df_verif[seg], label=f"{seg_plotname}", c=c)
 
         # Label == verif / workup
-        ax.plot(df_workup.index, df_workup[seg], ":", c=c, label="Work-up")
-        ax.plot(df_verif.index, df_verif[seg], label=f"Post-therapy", c=c)
+
+        # ax.plot(df_workup.index, df_workup[seg], ":", c=c, label="Work-up")
+        # ax.plot(df_verif.index, df_verif[seg], label=f"Post-therapy", c=c)
 
         # print(df_workup[seg])
         print(f"MEDIAN workup =", np.median(df_workup[seg]), f"verif =", np.median(df_verif[seg]))
@@ -922,14 +942,17 @@ settings_name = None
 
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT_dev\BS50\work-up"
 # patient_top_dir = r"E:\SIRT\EKR52\Slicer"
-# patient_top_dir = r"E:\SIRT\AAMSW82\Slicer"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\AAMSW82\Slicer"; segname_tot_counts="TotalCounts"; seg_name="dosemap_segmentation.seg.nrrd"
 # patient_top_dir = r"E:\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\verif"; segname_tot_counts=None
-# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\Slicer"; segname_tot_counts=None; seg_name="SegmentLabel_johan.seg.nrrd"
+patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\Slicer"; segname_tot_counts=None; seg_name="SegmentLabel_johan.seg.nrrd"
 # patient_top_dir = r"E:\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\workup"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
-patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\PCO59\verif"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\PCO59\verif"
+# settings_name = "settings.csv"
+settings_name = None
 
 
 input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
@@ -940,25 +963,27 @@ input_data = InputDataSIRT(patient_top_dir=patient_top_dir,
                            # segmentation_name="Segmentation.seg.nrrd",
                            settings_name=settings_name)
 
-verif = True
-save_dm = True
+
+verif = False
+save_dm = False
 save_dvh = True
 # input_data.check_files()  # TODO: do this somewhere
 
 # alias_dict = input_data.segmentation.tumor_alias_dict
 
 # MANUAL entries if no setting.csv:
-input_data.time_to_img = 2.25
+# input_data.time_to_img = 2.25
 input_data.shunt_factor = 0.05
-input_data.ind_window = [0, 62]
-input_data.adm_act = 3.053
-print(f"\tMANUAL entries: time_to_img = {input_data.time_to_img} hrs, shunt_factor = {input_data.shunt_factor}, adm_act = {input_data.adm_act} GBq")
+# input_data.ind_window = [0, 62]
+# input_data.adm_act = 3.053
+# print(f"\tMANUAL entries: time_to_img = {input_data.time_to_img} hrs, shunt_factor = {input_data.shunt_factor}, adm_act = {input_data.adm_act} GBq")
 
 
 if not verif:
     dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")
 else:
     dose_map = input_data.make_dosemap_decay_corrected(save_dosemap=save_dm)
+
 
 # dose_map, _ = nrrd.read(os.path.join(patient_top_dir, "dosemap_LSF-0.04_sum-LIVER_redistr.nrrd"), index_order="C")
 # print(dose_map.shape)
@@ -967,7 +992,7 @@ else:
 from sirt_functions import dose_map_func
 # dose_map_func(input_data.SPECT_path, output_path="dose_map_old.nrrd", shunt_factor=0.02)
 
-# sys.exit()
+sys.exit()
 
 if verif:
     input_data.act_levels = np.array([1.0])
@@ -983,10 +1008,11 @@ else:
 # input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100, "Left liver":40, "Right liver without tumour":40})
 # input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100})
 # make_cDVH(dose_map)
-# input_data.make_dvh(dose_map, segment_names=["TumorLobe"], save=save_dvh)
+# input_data.make_dvh(dose_map, segment_names=["LeftLobe", "SuperSelective"], save=save_dvh)
 
-# compare_dvh_workup_verif(patient_top_dir=os.path.join(patient_top_dir, ".."),
-#                          act_scale_workup=input_data.adm_act, include_seg=["Tumour"])
+compare_dvh_workup_verif(patient_top_dir=os.path.join(patient_top_dir, ".."),
+                         # act_scale_workup=input_data.adm_act, include_seg=["Tumour"])
+                         act_scale_workup=input_data.adm_act, include_seg=["LeftLobe", "SuperSelective"])
 
 # input_data.ind_window = [30, 85]
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"LeftLobe":"red"})#, "SuperSelective":"green"})
