@@ -659,7 +659,8 @@ class InputDataSIRT:
 
     def make_dvh(self, dm, segment_names=None, save=False):
         if segment_names == None:
-            segment_names = self.seg_operations.index.values
+            # segment_names = self.seg_operations.index.values
+            segment_names = self.seg_lookup.index.values
         print(f"\nMaking cDVH for segmentations:", segment_names)
 
         fig, ax = plt.subplots()
@@ -946,9 +947,9 @@ settings_name = None
 # patient_top_dir = r"E:\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\AAMSW82\verif"; segname_tot_counts="Liver"; seg_name="dosemap_segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\verif"; segname_tot_counts=None
-patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\Slicer"; segname_tot_counts=None; seg_name="SegmentLabel_johan.seg.nrrd"
+# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\EKR52\Slicer"; segname_tot_counts=None; seg_name="SegmentLabel_johan.seg.nrrd"
 # patient_top_dir = r"E:\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
-# patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\workup"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
+patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\workup"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\OBS42\verif"; segname_tot_counts="Liver"; seg_name="Segmentation.seg.nrrd"
 # patient_top_dir = r"C:\Users\toral\OneDrive\OUS\SIRT\PCO59\verif"
 # settings_name = "settings.csv"
@@ -974,7 +975,7 @@ save_dvh = True
 # MANUAL entries if no setting.csv:
 # input_data.time_to_img = 2.25
 input_data.shunt_factor = 0.05
-# input_data.ind_window = [0, 62]
+input_data.ind_window = [0, 62]
 # input_data.adm_act = 3.053
 # print(f"\tMANUAL entries: time_to_img = {input_data.time_to_img} hrs, shunt_factor = {input_data.shunt_factor}, adm_act = {input_data.adm_act} GBq")
 
@@ -992,7 +993,6 @@ else:
 from sirt_functions import dose_map_func
 # dose_map_func(input_data.SPECT_path, output_path="dose_map_old.nrrd", shunt_factor=0.02)
 
-sys.exit()
 
 if verif:
     input_data.act_levels = np.array([1.0])
@@ -1001,11 +1001,17 @@ else:
 
 # input_data.act_levels = np.array([4, 3, 2])
 
-# input_data.calculate_XGy_region_volumes(dose_map, X=100)
+input_data.calculate_XGy_region_volumes(dose_map, X=100)
 # input_data.calculate_XGy_region_volumes(dose_map, X=40)
+# input_data.make_dvh(dose_map, segment_names=None, save=False)
+# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100, "Left liver":40, "Liver not tumor":40})
+
+input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+
+sys.exit()
+
 
 # input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, segment_names=["TumorLobe"], X=100)
-# input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100, "Left liver":40, "Right liver without tumour":40})
 # input_data.plot_volume_covered_by_x_gy_for_activity(dose_map, X={"Tumour":100})
 # make_cDVH(dose_map)
 # input_data.make_dvh(dose_map, segment_names=["LeftLobe", "SuperSelective"], save=save_dvh)
@@ -1016,7 +1022,9 @@ compare_dvh_workup_verif(patient_top_dir=os.path.join(patient_top_dir, ".."),
 
 # input_data.ind_window = [30, 85]
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"LeftLobe":"red"})#, "SuperSelective":"green"})
-input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
+
+
+
 # input_data.plot_XGy_regions(verif=verif, inside_segment=False, crop=[[100, 512-100], [50, 512-25]])
 sys.exit()
 # input_data.plot_XGy_regions(verif=verif, plot_segments={"Liver":"green", "Tumor region":"red"})
