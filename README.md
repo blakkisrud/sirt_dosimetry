@@ -37,9 +37,9 @@ To calculate the dose-map, two functions may be used - depending on the method:
 
 ```python
 if not verif:  
-    dose_map = make_dosemap(input_data, shunt_factor=input_data.shunt_factor, reference_geometry="SPECT")  
+    dose_map = make_dosemap(sirt, shunt_factor=sirt.shunt_factor, reference_geometry="SPECT")  
 else:  
-    dose_map = input_data.make_dosemap_decay_corrected(reference_geometry="PET", save_dosemap=True)
+    dose_map = sirt.make_dosemap_decay_corrected(reference_geometry="PET", save_dosemap=True)
 ```
 
 
