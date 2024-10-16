@@ -59,7 +59,7 @@ sirt.calculate_XGy_region_volumes(dose_map, X=100, inside_segment=None)
 # Calculate and plot DVH -> save as dvh.csv inside patient_top_dir
 	# plots for all loaded segmentations if segment_names = None, 
 	# may also specify which to include as list of names
-sirt.make_cDVH(dose_map, segment_names=None, save=True)
+sirt.make_dvh(dose_map, segment_names=None, save=True)
 
 
 if verif:
